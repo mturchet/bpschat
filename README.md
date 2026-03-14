@@ -6,7 +6,7 @@ colorTo: green
 sdk: gradio
 sdk_version: "4.0.0"
 app_file: app.py
-short_description: Find eligible Boston Public Schools by grade and address. Informational only.
+short_description: Find eligible BPS schools by grade and address.
 ---
 
 # Boston Public Schools Enrollment Chatbot
@@ -97,7 +97,7 @@ You have two options. **Option A** uses only HuggingFace and your computer (no G
    git remote add space https://huggingface.co/spaces/YOUR_USERNAME/bps-enrollment-chatbot
    git push -u space main
    ```
-   When Git asks for a password, use your **HuggingFace token** (not your account password). Create a token at [huggingface.co/settings/tokens](https://huggingface.co/settings/tokens) (type: **Write**). For username, use your HuggingFace username.
+   When Git asks for **password**, paste your **HuggingFace token** (do *not* use your account password — HuggingFace no longer accepts passwords for Git). Create a token at [huggingface.co/settings/tokens](https://huggingface.co/settings/tokens) with **Write** access, then use your HuggingFace username and that token when prompted.
 5. After the push, the Space will rebuild automatically; in a minute or two your app should be live.
 
 **Option B — Use GitHub, then connect the Space to it**
