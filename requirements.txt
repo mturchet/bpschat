@@ -1,7 +1,7 @@
 # BPS Enrollment Chatbot — MVP
 # Run: pip install -r requirements.txt
 
-gradio>=4.0.0
+gradio>=4.44.0
 huggingface_hub>=0.19.0,<1.0
 pydantic>=2.0,<2.11
 python-dotenv>=1.0.0
