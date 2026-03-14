@@ -1,0 +1,36 @@
+{
+  "description": "Minimal BPS school display data. Used when the eligibility API returns only IDs or minimal fields. Update from bostonpublicschools.org or the BPS Discover Service when BPS rules or school list change.",
+  "source": "https://www.bostonpublicschools.org/schools",
+  "schools_by_id": {
+    "1": {
+      "name": "Boston Latin School",
+      "level": "Grades 7-12",
+      "address": "78 Avenue Louis Pasteur, Boston, MA 02115"
+    },
+    "2": {
+      "name": "John D. O'Bryant School of Mathematics and Science",
+      "level": "Grades 7-12",
+      "address": "55 Malcolm X Blvd, Roxbury, Boston, MA 02120"
+    },
+    "3": {
+      "name": "Boston Latin Academy",
+      "level": "Grades 7-12",
+      "address": "205 Townsend St, Boston, MA 02121"
+    },
+    "MOCK1": {
+      "name": "Sample Elementary",
+      "level": "Elementary",
+      "address": ""
+    },
+    "MOCK2": {
+      "name": "Sample K-8 School",
+      "level": "K-8",
+      "address": ""
+    },
+    "MOCK3": {
+      "name": "Sample Academy",
+      "level": "High School",
+      "address": ""
+    }
+  }
+}

@@ -1,0 +1,10 @@
+# BPS Enrollment Chatbot — MVP
+# Run: pip install -r requirements.txt
+
+gradio>=4.0.0
+huggingface_hub>=0.19.0,<1.0
+pydantic>=2.0,<2.11
+python-dotenv>=1.0.0
+requests>=2.28.0
+# Optional: httpx for async API calls later
+# HuggingFace SDK if using HF Inference for LLM (Phase 2)
