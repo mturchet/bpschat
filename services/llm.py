@@ -23,23 +23,23 @@ def _get_token() -> str:
 
 
 def _get_model() -> str:
-    return (os.environ.get("HF_INFERENCE_MODEL") or "HuggingFaceH4/zephyr-7b-beta").strip()
+    # Match benchmark/studentversion defaults unless explicitly overridden.
+    return (os.environ.get("HF_INFERENCE_MODEL") or "meta-llama/Llama-3.1-8B-Instruct").strip()
 
 
 # -----------------------------------------------------------------------------
 # System prompt (no fabrication of eligibility or school names)
 # -----------------------------------------------------------------------------
 
-BPS_SYSTEM_PROMPT = """You are a friendly guide for Boston Public Schools (BPS) enrollment. Your role is to help Boston families find which BPS schools their child may be eligible to attend based on grade and address.
+BPS_SYSTEM_PROMPT = """You are a warm, practical assistant for Boston Public Schools (BPS) enrollment questions.
 
 Rules you must follow:
-- Ask one question at a time. Do not ask for grade and address in the same message.
-- First ask for the child's grade (K1, K2, or grade 1 through 12). Then ask for the family's Boston address or ZIP code.
-- You do not decide eligibility or list schools. The system will look up eligible schools; you only ask questions and use a warm, clear tone.
-- You do NOT determine whether a ZIP code is in Boston. The system checks that automatically. If the user gives a ZIP, ask them to submit it (e.g. "Please enter your ZIP code so the system can check") or wait for the system's response; never tell them yourself that a ZIP is or isn't in Boston.
-- Never invent school names, eligibility rules, or which schools a family can attend. If the user asks for a list of schools, say that the system will look them up once you have their grade and address.
-- This tool is informational only. Do not help with enrollment or applications; suggest families confirm with Boston Public Schools directly.
-- Keep replies short (one or two sentences). Be welcoming and concise."""
+- Use a natural, conversational style similar to an advising chat.
+- If the user asks a broad question, you may ask 1-3 concise clarifying questions, often as a numbered list.
+- Give practical guidance about school choice and enrollment steps when possible.
+- You do not make official eligibility determinations. The system handles official eligibility once it has grade and address/ZIP.
+- Never claim to have run official eligibility checks unless the system has already returned results in the chat.
+- Avoid over-verbose answers; 1 short paragraph or a brief bulleted/numbered list is usually best."""
 
 
 # -----------------------------------------------------------------------------
@@ -64,22 +64,16 @@ def get_chat_reply(
     temperature: lower = more deterministic.
 
     Returns the assistant message text. If the LLM is unavailable (no token or API error),
-    returns a short fallback message so the app still works.
+    returns an empty string so the app can apply an outcome-specific fallback.
     """
     token = _get_token()
     if not token:
-        return (
-            "I'm here to help you find BPS schools. What grade is your child in? (K1, K2, or grade 1–12.) "
-            "*(To use the full conversational guide, set HF_TOKEN or HUGGINGFACE_TOKEN in your environment.)*"
-        )
+        return ""
 
     try:
         from huggingface_hub import InferenceClient
     except ImportError:
-        return (
-            "What grade is your child in? (K1, K2, or grade 1–12.) "
-            "*(LLM not available: install huggingface_hub and set HF_TOKEN.)*"
-        )
+        return ""
 
     prompt = system_prompt or BPS_SYSTEM_PROMPT
     full_messages: List[Dict[str, str]] = [{"role": "system", "content": prompt}]
@@ -97,23 +91,20 @@ def get_chat_reply(
             temperature=temperature,
         )
     except Exception:
-        return (
-            "What grade is your child in? (K1, K2, or grade 1–12.) "
-            "*(The assistant is temporarily unavailable; you can still try entering your grade and address.)*"
-        )
+        return ""
 
     # ChatCompletionOutput has .choices[0].message.content
     choices = getattr(out, "choices", None) or []
     if not choices:
-        return "I didn't get a reply. What grade is your child in? (K1, K2, or grade 1–12.)"
+        return ""
     msg = getattr(choices[0], "message", None)
     if not msg:
-        return "What grade is your child in? (K1, K2, or grade 1–12.)"
+        return ""
     content = getattr(msg, "content", None)
     if content is None:
         content = getattr(msg, "content", "")
     text = (content or "").strip()
-    return text or "What grade is your child in? (K1, K2, or grade 1–12.)"
+    return text
 
 
 def get_intro_for_schools() -> str:

@@ -75,6 +75,30 @@ class TestChatFlow(unittest.TestCase):
         self.assertIn("5-digit Boston ZIP code", reply)
         self.assertIn("02119", reply)
 
+    def test_broad_school_search_gets_numbered_clarifying_questions(self):
+        req = _Req("t-broad")
+        history, _ = app.chat(
+            "Hi, I'm looking for a public school in Boston for my child next year.",
+            [],
+            req,
+        )
+        reply = history[-1][1]
+        self.assertIn("1.", reply)
+        self.assertIn("2.", reply)
+        self.assertIn("3.", reply)
+        self.assertIn("grade", reply.lower())
+        self.assertIn("zip", reply.lower())
+
+    def test_blank_message_uses_studentstyle_intake_prompt(self):
+        req = _Req("t-blank")
+        history, _ = app.chat("", [], req)
+        reply = history[-1][1]
+        self.assertIn("1.", reply)
+        self.assertIn("2.", reply)
+        self.assertIn("3.", reply)
+        self.assertIn("grade", reply.lower())
+        self.assertIn("preferences", reply.lower())
+
 
 if __name__ == "__main__":
     unittest.main()
