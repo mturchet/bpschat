@@ -10,6 +10,7 @@ Optional env: PORT — port to use (default 7860). Use if 7860 is already in use
 from __future__ import annotations
 
 import os
+import re
 
 # Load .env so HF_TOKEN, PORT, etc. are available when running locally
 try:
@@ -20,7 +21,7 @@ except ImportError:
 
 import gradio as gr
 
-from services import intake, llm
+from services import eligibility, intake, llm
 
 # -----------------------------------------------------------------------------
 # Session state: in-memory only, keyed by UI session ID (no server-side PII persistence).
@@ -45,6 +46,82 @@ def _history_to_messages(history: list) -> list:
         if asst_msg:
             messages.append({"role": "assistant", "content": asst_msg})
     return messages
+
+
+def _looks_like_grade_or_question(text: str) -> bool:
+    """
+    True if the message might be about grade (e.g. "K2", "grade 5") or a clear BPS/grade-related question.
+    False for gibberish or clearly unrelated input — we'll reply with "I didn't understand" instead of the LLM.
+    """
+    if not text or not text.strip():
+        return False
+    t = text.strip().lower()
+    # Could be a grade: digits, or K1/K2, or words like "grade", "kindergarten"
+    if any(c.isdigit() for c in t):
+        return True
+    grade_related = ("k1", "k2", "grade", "kindergarten", "child", "kid", "school", "bps", "boston", "enroll", "attend")
+    return any(w in t for w in grade_related)
+
+
+def _looks_like_address_or_question(text: str) -> bool:
+    """
+    True if the message might be an address/ZIP or a clear question about it.
+    False for gibberish — we'll reply with "I didn't understand" and re-ask for address.
+    """
+    if not text or not text.strip():
+        return False
+    t = text.strip().lower()
+    # Likely address: contains digits (ZIP or street number) or address-related words
+    if any(c.isdigit() for c in t):
+        return True
+    address_related = ("zip", "address", "street", "boston", "live", "location", "021", "022")
+    return any(w in t for w in address_related)
+
+
+def _contains_zip_5(text: str) -> bool:
+    """Return True if text contains a 5-digit ZIP (or ZIP+4)."""
+    if not text:
+        return False
+    return bool(re.search(r"\b\d{5}(?:-\d{4})?\b", text))
+
+
+def _looks_like_street_address(text: str) -> bool:
+    """Heuristic for street-style address text."""
+    if not text or not text.strip():
+        return False
+    t = text.lower()
+    suffixes = (
+        " st", " street", " ave", " avenue", " rd", " road", " blvd", " boulevard",
+        " ln", " lane", " dr", " drive", " ct", " court", " pl", " place", " pkwy", " parkway",
+    )
+    has_suffix = any(s in t for s in suffixes)
+    has_number = bool(re.search(r"\b\d{1,6}\b", t))
+    return has_suffix and has_number
+
+
+def _is_greeting(text: str) -> bool:
+    """Detect simple greetings so we can welcome users instead of saying we did not understand."""
+    if not text or not text.strip():
+        return False
+    t = text.strip().lower()
+    return bool(re.match(r"^(hi|hello|hey|good (morning|afternoon|evening)|yo)\b", t))
+
+
+def _is_reask_schools_request(text: str) -> bool:
+    """Detect requests to show schools again from users who already completed intake."""
+    if not text or not text.strip():
+        return False
+    t = text.lower()
+    triggers = ("show", "list", "again", "schools", "eligible", "results")
+    return ("school" in t or "eligible" in t) and any(k in t for k in triggers)
+
+
+def _is_zip_confirmation_question(text: str) -> bool:
+    """Detect questions asking whether a ZIP/address is in Boston."""
+    if not text or not text.strip():
+        return False
+    t = text.lower()
+    return ("zip" in t or "021" in t or "022" in t or "boston" in t) and "?" in t
 
 
 # Citation and disclaimer shown with every eligibility result (plan: school-output).
@@ -95,10 +172,12 @@ def chat(message: str, history: list, request: gr.Request | None = None) -> tupl
 
     user_msg = (message or "").strip()
     if not user_msg:
-        reply = llm.get_chat_reply(
-            _history_to_messages(history),
-            system_prompt=llm.BPS_SYSTEM_PROMPT,
-        )
+        if not state.get("grade"):
+            reply = "Hi! What grade is your child in? (K1, K2, or grade 1-12.)"
+        elif not state.get("zip_code"):
+            reply = "What is your Boston address or ZIP code? (We need this to look up eligible schools.)"
+        else:
+            reply = "How can I help? I can show your eligible schools again if you want."
         history.append((message, reply))
         _session_store[sid] = state
         return history, ""
@@ -118,22 +197,31 @@ def chat(message: str, history: list, request: gr.Request | None = None) -> tupl
         return history, ""
 
     if outcome_kind == "need_grade":
-        messages = _history_to_messages(history) + [{"role": "user", "content": user_msg}]
-        reply = llm.get_chat_reply(messages, system_prompt=llm.BPS_SYSTEM_PROMPT)
+        if _is_greeting(user_msg):
+            reply = "Hi! I can help you find eligible BPS schools. What grade is your child in? (K1, K2, or grade 1-12.)"
+            history.append((user_msg, reply))
+            return history, ""
+        # Unclear or gibberish input: deterministic fallback for reliability
+        if not _looks_like_grade_or_question(user_msg):
+            reply = (
+                "I didn't quite get that. What grade is your child in? (K1, K2, or grade 1-12.)"
+            )
+            history.append((user_msg, reply))
+            return history, ""
+        # Grade-related question but no grade value provided yet.
+        reply = "I can help with that. To start, what grade is your child in? (K1, K2, or grade 1-12.)"
         history.append((user_msg, reply))
         return history, ""
 
     if outcome_kind == "need_address":
-        messages = _history_to_messages(history) + [
-            {"role": "user", "content": user_msg},
-            {"role": "assistant", "content": "Great. What is your Boston address or ZIP code? (We need this to look up eligible schools.)"},
-        ]
-        reply = llm.get_chat_reply(
-            messages,
-            system_prompt=llm.BPS_SYSTEM_PROMPT + "\n\nYou just received the grade. Reply with exactly one short sentence asking for their Boston address or ZIP code. Do not repeat the grade.",
-        )
-        if not reply or ("address" not in reply.lower() and "zip" not in reply.lower()):
-            reply = "Thanks! What is your Boston address or ZIP code? (We need this to look up eligible schools.)"
+        # Unclear or gibberish: fixed "I didn't understand" and re-ask for address
+        if not _looks_like_address_or_question(user_msg):
+            reply = (
+                "I didn't quite get that. What is your Boston address or ZIP code? (We need this to look up eligible schools.)"
+            )
+            history.append((user_msg, reply))
+            return history, ""
+        reply = "Thanks! What is your Boston address or ZIP code? (We need this to look up eligible schools.)"
         history.append((user_msg, reply))
         return history, ""
 
@@ -148,9 +236,59 @@ def chat(message: str, history: list, request: gr.Request | None = None) -> tupl
         history.append((user_msg, reply))
         return history, ""
 
-    # "converse" or "already_have_both": use LLM for reply
+    if outcome_kind == "converse":
+        if _looks_like_street_address(user_msg) and not _contains_zip_5(user_msg):
+            reply = (
+                "Thanks. Please include your 5-digit Boston ZIP code too (for example, 02119) "
+                "so I can look up eligible schools."
+            )
+            history.append((user_msg, reply))
+            return history, ""
+        reply = (
+            "Please share your Boston address or ZIP code, and I will look up eligible schools. "
+            "If you only know the ZIP code, that is okay."
+        )
+        history.append((user_msg, reply))
+        return history, ""
+
+    if outcome_kind == "already_have_both":
+        if _is_reask_schools_request(user_msg):
+            result = eligibility.get_eligible_schools(
+                grade=state.get("grade") or "",
+                zip_code=state.get("zip_code") or "",
+                street_number=state.get("street_number") or "1",
+                street_name=state.get("street_name") or "Washington St",
+            )
+            if not result.ok:
+                reply = result.message
+            else:
+                reply = llm.get_intro_for_schools() + "\n\n" + _format_schools_list(result.schools)
+            history.append((user_msg, reply))
+            return history, ""
+        if _is_zip_confirmation_question(user_msg):
+            reply = (
+                "Yes, thanks. I already have your location details in this chat. "
+                "I can show your eligible schools again whenever you want."
+            )
+            history.append((user_msg, reply))
+            return history, ""
+
+    # default conversational fallback when we are outside intake prompts
     messages = _history_to_messages(history) + [{"role": "user", "content": user_msg}]
-    reply = llm.get_chat_reply(messages, system_prompt=llm.BPS_SYSTEM_PROMPT)
+    system_prompt = llm.BPS_SYSTEM_PROMPT
+    # User already gave grade and Boston address; don't re-ask or deflect
+    if outcome_kind == "already_have_both":
+        grade = state.get("grade") or ""
+        zip_code = state.get("zip_code") or ""
+        system_prompt = (
+            system_prompt
+            + "\n\nIMPORTANT: The user has already provided their child's grade ("
+            + str(grade)
+            + ") and Boston address/ZIP ("
+            + str(zip_code)
+            + "). Do NOT ask for grade or address again. Keep your reply short and helpful."
+        )
+    reply = llm.get_chat_reply(messages, system_prompt=system_prompt)
     if not reply:
         reply = (
             "What is your Boston address or ZIP code? (We need this to look up eligible schools.)"

@@ -43,6 +43,18 @@ A conversational chatbot that guides Boston families through BPS school eligibil
 
 ---
 
+## Run tests
+
+From the project root (with your venv activated):
+
+```bash
+python -m unittest tests.test_intake_zip -v
+```
+
+This runs tests for ZIP extraction (e.g. Boston ZIPs like 02298, formats like `ZIP:02298`, and correction patterns like "02142 then 02298") and for the "already have grade + address" flow so the bot doesn’t re-ask for them.
+
+---
+
 ## Environment variables
 
 - **PORT** — Port for the web server (default `7860`). If you see "address already in use", run with another port, e.g. `PORT=7862 python app.py`.
@@ -50,7 +62,7 @@ A conversational chatbot that guides Boston families through BPS school eligibil
 **Eligibility client (Phase 1):**
 
 - **ELIGIBILITY_API_BASE_URL** — Base URL for the BPS Discover Service (default: `http://api.mybps.org/BPSDiscoverService/Schools.svc`). Only change if you use a different endpoint.
-- **USE_MOCK_ELIGIBILITY** — Set to `true`, `1`, or `yes` to use mock eligibility results (no real API calls). Useful for local UI testing when the API is unavailable.
+- **USE_MOCK_ELIGIBILITY** — Set to `true`, `1`, or `yes` to use mock eligibility results (no real API calls). **Recommended for local testing** so you can try the full flow (grade + Boston ZIP → schools) without depending on the BPS API being reachable from your network.
 - **ELIGIBILITY_REQUEST_TIMEOUT** — Timeout in seconds for API calls (default `15`).
 - **ELIGIBILITY_API_KEY** — Optional; BPS Discover Service currently uses no authentication. Reserved for future use.
 

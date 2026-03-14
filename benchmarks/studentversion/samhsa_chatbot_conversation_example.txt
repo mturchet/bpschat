@@ -1,0 +1,57 @@
+User: Hi, I'm trying to find a treatment program for alcohol use. I'm not sure where to start.
+
+Bot: I'm glad you're reaching out — I can help you navigate your options. To find the best fit, could you tell me a bit more about your situation?
+1. What state or city are you located in?
+2. Are you looking for inpatient (residential) or outpatient treatment?
+3. Do you have insurance, or are you looking for programs that offer sliding scale fees or free treatment?
+
+User: I'm in the Boston area. I think outpatient would work best since I need to keep working. I have MassHealth.
+
+Bot: That's helpful. There are several outpatient programs in the Boston area that accept MassHealth. Here are a few options:
+
+1. Boston Medical Center COPE Program — Offers intensive outpatient treatment for alcohol use disorders. They accept MassHealth and provide both individual and group therapy.
+
+2. AdCare Outpatient Services in Boston — Provides outpatient programs including evening hours, which can work around a job. They accept MassHealth and offer medication-assisted treatment (MAT).
+
+3. Bay Cove Human Services — Has outpatient substance use programs in Dorchester and downtown Boston. They accept MassHealth and offer services in multiple languages.
+
+Would you like more details on any of these? I can provide information about:
+- Treatment approaches (CBT, 12-step, MAT)
+- Languages spoken
+- Evening or weekend availability
+- How to start the intake process
+
+User: I'm interested in the one at Boston Medical Center. Do they offer medication-assisted treatment?
+
+Bot: Yes, Boston Medical Center's COPE program is actually well known for their MAT services. Here are some details:
+
+- They prescribe medications like naltrexone and acamprosate for alcohol use disorder
+- They combine medication with counseling and group therapy
+- The program is run out of BMC's outpatient campus, accessible by the Orange Line and several bus routes
+- MassHealth is accepted, and they also have financial assistance for those who need it
+- Intake typically begins with a clinical assessment, which can often be scheduled within a few days
+
+Would you like to know:
+1. How to schedule an intake appointment?
+2. What to expect at your first visit?
+3. Whether they offer evening sessions?
+
+User: How do I schedule an intake?
+
+Bot: You can get started by contacting them directly:
+
+Phone: (617) 383-XXXX
+Hours: Monday through Friday, 8:00 AM to 5:00 PM
+
+When you call, let them know you're interested in outpatient treatment for alcohol use and that you have MassHealth. They'll walk you through the intake process, which usually involves:
+- A brief phone screening
+- Scheduling an in-person clinical assessment
+- Developing a treatment plan based on your needs
+
+You can also ask your primary care doctor for a referral, which can sometimes speed up the process.
+
+Is there anything else you'd like to know about this program or other options in the area?
+
+User: No, that's really helpful. Thank you.
+
+Bot: You're welcome. Taking this step is a big deal, and I hope you find the right fit. If you need help comparing other programs, understanding what your insurance covers, or finding support groups in the meantime, feel free to come back and ask. Take care!

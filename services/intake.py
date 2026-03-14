@@ -72,14 +72,48 @@ def _extract_grade_candidate(text: str) -> Optional[str]:
 
 
 def _extract_zip_candidate(text: str) -> Optional[str]:
-    """Extract a 5-digit ZIP from text. Prefer one that looks like Boston (021xx, 022xx)."""
+    """Extract a 5-digit ZIP from text. Prefer Boston zips; when multiple, prefer the last one (user correction)."""
     if not text or not isinstance(text, str):
         return None
-    matches = re.findall(r"\b(\d{5})(?:-\d{4})?\b", text.strip())
-    for m in matches:
+    t = text.strip()
+    # Word-boundary matches (e.g. "02298", "zip 02298", "02119-1234")
+    matches = re.findall(r"\b(\d{5})(?:-\d{4})?\b", t)
+    if not matches:
+        # Fallback: any 5-digit sequence (e.g. "ZIP:02298", "zip=02298" where \b might not match)
+        matches = re.findall(r"(\d{5})", t)
+    if not matches:
+        return None
+    # Prefer last Boston zip in message (handles "02142 then 02298" or "no, 02298")
+    for m in reversed(matches):
         if m in eligibility.BOSTON_ZIP_CODES:
             return m
-    return matches[0] if matches else None
+    # Otherwise last zip mentioned (so we validate it and give a clear error if not Boston)
+    return matches[-1]
+
+
+def _extract_street_candidate(text: str) -> tuple[Optional[str], Optional[str]]:
+    """
+    Extract a likely street number + street name from free text.
+
+    Examples handled:
+    - "100 Warren St, Boston, MA 02119"
+    - "I live at 12 Beacon Street Boston MA 02108"
+    """
+    if not text or not isinstance(text, str):
+        return (None, None)
+    t = " ".join(text.strip().split())
+    # Require common street suffix for better precision.
+    suffix = r"(?:st|street|ave|avenue|rd|road|blvd|boulevard|ln|lane|dr|drive|ct|court|pl|place|pkwy|parkway|ter|terrace|way)\.?"
+    pattern = re.compile(
+        rf"\b(?:at\s+)?(\d{{1,6}})\s+([A-Za-z0-9][A-Za-z0-9 .'\-]*?\s+{suffix})\b",
+        re.IGNORECASE,
+    )
+    m = pattern.search(t)
+    if not m:
+        return (None, None)
+    number = m.group(1).strip()
+    street = re.sub(r"\s+", " ", m.group(2).strip())
+    return (number, street)
 
 
 # -----------------------------------------------------------------------------
@@ -125,11 +159,16 @@ def step(state: dict[str, Any], user_message: str) -> tuple[dict[str, Any], tupl
 
     # --- Have grade, missing address: try to extract and run geography guardrail, then eligibility
     zip_candidate = _extract_zip_candidate(user_msg)
+    street_number, street_name = _extract_street_candidate(user_msg)
     if zip_candidate is not None:
         ok_geo, geo_msg = eligibility.validate_geography(zip_candidate, None, None)
         if not ok_geo:
             return state, _outcome("guardrail_geo_fail", geo_msg)
         state["zip_code"] = zip_candidate
+        if street_number:
+            state["street_number"] = street_number
+        if street_name:
+            state["street_name"] = street_name
         result = eligibility.get_eligible_schools(
             grade=state["grade"],
             zip_code=zip_candidate,

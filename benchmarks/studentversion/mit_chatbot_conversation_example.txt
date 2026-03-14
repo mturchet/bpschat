@@ -1,0 +1,55 @@
+User: Hi, I'm a junior in Course 6-3 and I need to pick classes for next semester. Can you help?
+
+Bot: Of course! I'd be happy to help you plan your schedule. To give you the best recommendations, could you tell me:
+1. What requirements do you still need to fulfill (e.g., CI-H, HASS, technical electives)?
+2. Do you have any scheduling constraints (e.g., prefer mornings, need certain days free)?
+3. Are there particular topics or areas you're interested in?
+
+User: I still need a CI-H and I'm interested in AI ethics or policy. I'd prefer afternoon classes if possible.
+
+Bot: Great combination! Here are a few options that could work for you:
+
+1. 24.131 Ethics of Technology — This is a CI-H philosophy course that directly addresses ethical issues in AI and computing. It typically meets in the afternoon.
+
+2. STS.085 History of Computing and AI — A CI-H course in Science, Technology, and Society that covers the social and political dimensions of AI development.
+
+3. 17.S952 Topics in Political Science: AI and Democracy — A seminar that examines how AI intersects with democratic institutions and policy. Check the schedule for current semester times.
+
+Would you like to know more about any of these? I can provide details about:
+- Prerequisites
+- Typical class size and format
+- Schedule and time slots
+- How they fulfill your degree requirements
+
+User: Tell me more about 24.131. What are the prereqs?
+
+Bot: Here are the details on 24.131 Ethics of Technology:
+
+- Prerequisites: None, though one prior philosophy course is recommended
+- Format: Seminar-style, heavy on discussion and writing
+- CI-H: Yes, it fulfills the CI-H requirement
+- Units: 12 (3-0-9)
+- Typical enrollment: Around 25 students
+- It counts as a HASS elective for your 6-3 degree
+
+Since you're in 6-3, this would knock out your CI-H while exploring AI ethics — a pretty efficient use of a slot.
+
+Would you like to know:
+1. Who's teaching it next semester?
+2. What the writing assignments look like?
+3. How it compares to the other options I mentioned?
+
+User: Does it conflict with 6.3900? I'm planning to take that too.
+
+Bot: 6.3900 (Introduction to Machine Learning) is typically offered with multiple lecture sections, so it depends on which section you enroll in. In recent semesters:
+
+- 6.3900 Lecture has been offered both in the morning (11 AM) and early afternoon (1 PM)
+- 6.3900 recitations are scattered throughout the week
+
+I'd recommend checking the current semester's schedule on student.mit.edu/catalog to confirm exact times. If 24.131 is in a late afternoon slot, you should be able to avoid conflicts with most 6.3900 sections.
+
+Would you like help mapping out a full schedule, or do you have other courses you're considering?
+
+User: No, this is really helpful. Thanks!
+
+Bot: You're welcome! Good luck with registration. If you need help checking prerequisites, finding more CI-H options, or mapping out the rest of your schedule, feel free to ask. Have a great semester!

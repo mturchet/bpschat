@@ -199,6 +199,27 @@ def validate_geography(zip_code: str | None, city: str | None = None, state: str
 # BPS Discover Service API client
 # -----------------------------------------------------------------------------
 
+# Placeholder (number, street) pairs to try when user provides only a ZIP code.
+# The BPS API requires a matching street address to return an AddressID; many ZIPs
+# (e.g. 02199) do not have "1 Washington St". We try these until one matches.
+_ZIP_ONLY_PLACEHOLDERS = [
+    ("1", "Washington St"),
+    ("100", "Washington St"),
+    ("1", "Congress St"),
+    ("100", "Congress St"),
+    ("1", "State St"),
+    ("1", "Summer St"),
+    ("1", "Tremont St"),
+    ("1", "Boylston St"),
+    ("1", "Beacon St"),
+    ("1", "Cambridge St"),
+    ("100", "Massachusetts Ave"),
+    ("1", "Newbury St"),
+    ("1", "Columbus Ave"),
+    ("1", "Stuart St"),
+    ("1", "Atlantic Ave"),
+]
+
 
 def _address_matches(base_url: str, street_number: str, street: str, zip_code: str, timeout: int) -> dict[str, Any]:
     """Call AddressMatches to get AddressID(s). Returns JSON response."""
@@ -211,6 +232,35 @@ def _address_matches(base_url: str, street_number: str, street: str, zip_code: s
     resp = requests.get(url, params=params, timeout=timeout, headers={"Accept": "application/json"})
     resp.raise_for_status()
     return resp.json()
+
+
+def _try_address_match_for_zip(
+    base_url: str, zip_code: str, timeout: int
+) -> tuple[Optional[str], Optional[str]]:
+    """
+    When user provided only a ZIP, try multiple placeholder addresses in that ZIP
+    until the API returns a match. Returns (address_id, None) or (None, error_message).
+    """
+    for street_num, street in _ZIP_ONLY_PLACEHOLDERS:
+        try:
+            addr_resp = _address_matches(base_url, street_num, street, zip_code, timeout)
+        except requests.exceptions.RequestException:
+            continue
+        errors = addr_resp.get("Error") or []
+        if errors:
+            continue
+        addr_list = addr_resp.get("List") or []
+        if not addr_list:
+            continue
+        first = addr_list[0] if isinstance(addr_list[0], dict) else {}
+        address_id = first.get("AddressID") or first.get("address_id")
+        if address_id:
+            return (str(address_id), None)
+    return (
+        None,
+        "We couldn't find an address in that Boston ZIP code. "
+        "Please enter a full street address (e.g. street number and name) so we can look up your eligible schools.",
+    )
 
 
 def _home_schools(base_url: str, address_id: str, grade: str, school_year: str, timeout: int) -> dict[str, Any]:
@@ -256,6 +306,25 @@ def _current_school_year() -> str:
     """Return current school year string (e.g. 2025). Simple: calendar year as of today."""
     import datetime
     return str(datetime.date.today().year)
+
+
+def _school_year_candidates() -> list[str]:
+    """
+    Return candidate school years to try, newest-first.
+
+    The BPS API can lag behind the calendar year at rollover; trying the previous
+    year often avoids empty lists when data for the new year is not published yet.
+    """
+    current = int(_current_school_year())
+    years = [str(current), str(current - 1), str(current + 1), str(current - 2)]
+    # Preserve order, remove duplicates.
+    seen: set[str] = set()
+    out: list[str] = []
+    for y in years:
+        if y not in seen:
+            seen.add(y)
+            out.append(y)
+    return out
 
 
 # -----------------------------------------------------------------------------
@@ -345,35 +414,73 @@ def get_eligible_schools(
             msg = first.get("Message") or "Address could not be verified."
             return _error(f"We couldn't verify that address. {msg} Please check and try again.")
         addr_list = addr_resp.get("List") or []
-        if not addr_list:
+        address_id = None
+        if addr_list:
+            first_addr = addr_list[0] if isinstance(addr_list[0], dict) else {}
+            address_id = first_addr.get("AddressID") or first_addr.get("address_id")
+        # ZIP-only fallback: if single lookup failed and we're using default placeholders, try other streets in that ZIP
+        if not address_id and (street_num in ("1", "") and (street or "Washington St").strip() == "Washington St"):
+            address_id, zip_error = _try_address_match_for_zip(base_url, zip_for_api, timeout)
+            if zip_error:
+                return _error(zip_error)
+        if not address_id:
             return _error(
                 "We couldn't find that address in Boston. Please check the address or ZIP code and try again. "
-                "If you only entered a ZIP code, try entering a full street address.",
+                "If you only entered a ZIP code, try entering a full street address."
             )
-        first_addr = addr_list[0] if isinstance(addr_list[0], dict) else {}
-        address_id = first_addr.get("AddressID") or first_addr.get("address_id")
-        if not address_id:
-            return _error("We couldn't get a valid address ID for that location. Please try a full Boston address.")
 
-        # Step 2: HomeSchools
-        school_year = _current_school_year()
-        schools_resp = _home_schools(base_url, str(address_id), normalized_grade, school_year, timeout)
-        errors = schools_resp.get("Error") or []
-        if errors:
-            first = errors[0] if isinstance(errors[0], dict) else {}
-            msg = first.get("Message") or "Eligibility lookup failed."
-            return _error(f"We couldn't load eligible schools. {msg}")
-        raw_list = schools_resp.get("List") or []
-        schools = _parse_school_list(raw_list)
+        # Step 2: HomeSchools with year fallback to reduce false empty results.
+        schools: list[SchoolInfo] = []
+        last_error_message: str | None = None
+        for school_year in _school_year_candidates():
+            schools_resp = _home_schools(base_url, str(address_id), normalized_grade, school_year, timeout)
+            errors = schools_resp.get("Error") or []
+            if errors:
+                first = errors[0] if isinstance(errors[0], dict) else {}
+                last_error_message = first.get("Message") or "Eligibility lookup failed."
+                # Keep trying nearby years before failing.
+                continue
+            raw_list = schools_resp.get("List") or []
+            schools = _parse_school_list(raw_list)
+            if schools:
+                break
+
+        if not schools and last_error_message:
+            return _error(f"We couldn't load eligible schools. {last_error_message}")
+
         schools = [school_data.enrich_school_info(s) for s in schools]
         return _success(schools)
 
     except requests.exceptions.Timeout:
         return _error("The school lookup is taking too long. Please try again in a moment.")
+    except requests.exceptions.HTTPError as e:
+        # Server responded but with an error (403, 404, 500, etc.) — often means API not allowed from this network
+        status = getattr(e.response, "status_code", None) if getattr(e, "response", None) else None
+        if status == 403:
+            return _error(
+                "The school eligibility service denied access (403). It may only be available from certain networks. "
+                "Try again later or use this tool from the Boston Public Schools website. For now, you can set USE_MOCK_ELIGIBILITY=true in .env to test the flow with sample results."
+            )
+        if status == 404:
+            return _error(
+                "The school eligibility service endpoint was not found (404). The API may have changed. "
+                "Contact Boston Public Schools for the correct tool. You can set USE_MOCK_ELIGIBILITY=true in .env to test the flow with sample results."
+            )
+        return _error(
+            f"The school eligibility service returned an error (HTTP {status or 'unknown'}). "
+            "It may be temporarily unavailable or not reachable from your network. Try again later or contact Boston Public Schools. "
+            "You can set USE_MOCK_ELIGIBILITY=true in .env to test the flow with sample results."
+        )
+    except requests.exceptions.ConnectionError:
+        return _error(
+            "We couldn't connect to the school eligibility service (no response from the server). "
+            "Your internet may be fine, but the BPS service might be down or only reachable from certain networks. "
+            "Try again later or use this tool from the Boston Public Schools website. You can set USE_MOCK_ELIGIBILITY=true in .env to test with sample results."
+        )
     except requests.exceptions.RequestException as e:
         return _error(
             "We couldn't reach the school eligibility service. Please check your connection and try again. "
-            "If the problem continues, contact Boston Public Schools directly."
+            "If the problem continues, contact Boston Public Schools directly. You can set USE_MOCK_ELIGIBILITY=true in .env to test with sample results."
         )
     except Exception:
         return _error(
