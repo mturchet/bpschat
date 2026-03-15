@@ -43,10 +43,7 @@ def create_chatbot():
                 f"Technical details: {exc}"
             )
 
-        updated_history = history + [
-            {"role": "user", "content": message},
-            {"role": "assistant", "content": response},
-        ]
+        updated_history = model_history + [[message, response]]
         export_path = chatbot.consume_last_export_path()
         downloadable_file = export_path if export_path and os.path.exists(export_path) else None
         return "", updated_history, downloadable_file
@@ -58,7 +55,7 @@ def create_chatbot():
             Ask me anything about Boston Public Schools enrollment that I will try my best to find what your family needs
             """
         )
-        chat_window = gr.Chatbot(label="BPS Enrollment Assistant", height=540)
+        chat_window = gr.Chatbot(label="BPS Enrollment Assistant", height=540, type="tuples")
         message_box = gr.Textbox(
             label="Your message",
             placeholder="Example: My child is entering K2 and we live in 02124",
