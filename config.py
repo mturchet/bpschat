@@ -18,7 +18,7 @@ HF_TOKEN = os.getenv("HF_TOKEN")
 # Provider switch:
 # - "openai" for local dev/testing
 # - "huggingface" for HF inference providers
-LLM_PROVIDER = os.getenv("LLM_PROVIDER", "openai").strip().lower()
+LLM_PROVIDER = os.getenv("LLM_PROVIDER", "huggingface").strip().lower()
 
 # OpenAI settings (used when LLM_PROVIDER=openai)
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")

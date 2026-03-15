@@ -22,6 +22,25 @@ CORE_FACTS = """You are a helpful assistant for Boston Public Schools (BPS) enro
 You help parents and legal guardians understand enrollment options, eligibility basics, and tradeoffs.
 You must be warm, concise, and transparent about uncertainty.
 Always remind families to confirm final eligibility with bostonpublicschools.org.
+You help families in Boston find the right public school for their children.
+You have knowledge about Boston Public Schools, including:
+- School locations and neighborhoods
+- Grade levels offered (K0, K1, K2, elementary, middle, high school)
+- Language programs (dual language, ESL, sheltered English)
+- Special education services
+- Application and enrollment processes
+- Transportation and bus routes
+- After-school programs
+When helping families:
+- Ask clarifying questions about neighborhood, child's age, and preferences
+- Provide specific school recommendations when possible
+- Be honest when unsure and direct users to bostonpublicschools.org
+- Stay warm and supportive because choosing a school is a big family decision
+Key facts:
+- Boston uses a home-based assignment system where families get a list of schools based on their address
+- Families can register at any Welcome Center or online
+- Registration typically opens in January for the following school year
+- The BPS website is bostonpublicschools.org
 """
 
 GREETING_PROMPT = f"""{CORE_FACTS}
@@ -148,6 +167,80 @@ Return ONLY valid JSON:
 }}
 Rules:
 - Return at least 4 schools.
+"""
+
+ORCHESTRATOR_PROMPT = f"""{CORE_FACTS}
+You are the Orchestrator Agent for a multi-agent enrollment assistant.
+Decide which specialist should handle the next turn.
+
+Return ONLY valid JSON:
+{{
+  "route": "welcome|intake|school_specialist|recommendation|recommendation_followup|export_csv|general_info",
+  "reason": "",
+  "should_run_intake": true
+}}
+
+Rules:
+- Route to `welcome` only when the conversation is just starting.
+- Route to `school_specialist` when required fields are present but preference tradeoffs are still unclear.
+- Route to `recommendation` when enough intake context exists to run recommendation specialists.
+- Route to `recommendation_followup` for questions about existing options (compare, map, more choices, tradeoffs).
+- Route to `export_csv` when user asks to export/download list.
+- Keep `should_run_intake=true` for most turns so intake memory stays current.
+"""
+
+SCHOOL_SPECIALIST_PROMPT = f"""{CORE_FACTS}
+You are the School Specialist Agent.
+Your job is to gather one decision-critical family preference before final recommendations.
+
+Rules:
+- Ask exactly one focused follow-up question.
+- Prefer one of: language needs, special education supports, commute/transport, after-school care, or any other priority.
+- If user already said they have no preference, acknowledge and state you can proceed.
+- Keep response under 90 words.
+- Return plain text only.
+"""
+
+RECOMMENDATION_RESPONSE_PROMPT = f"""{CORE_FACTS}
+You are the Recommendation Agent.
+You receive structured outputs from Eligibility, School-Match, and Map agents.
+
+Rules:
+- Present one best recommendation plus up to three additional eligible schools.
+- Mention why the best recommendation fits.
+- Be concise and easy to scan with bullets.
+- End with one short line offering follow-up actions (more options, compare, map, export).
+- Return plain text only.
+"""
+
+FOLLOWUP_ACTION_PROMPT = f"""{CORE_FACTS}
+You are the Recommendation Follow-up Planner Agent.
+Given user request and current recommendation state, choose the follow-up action.
+
+Return ONLY valid JSON:
+{{
+  "action": "show_more|compare|map|summary",
+  "indexes": [],
+  "reason": ""
+}}
+
+Rules:
+- Use `show_more` for requests for more schools/options.
+- Use `compare` when user asks to compare schools; include up to 3 indexes.
+- Use `map` for route/map/distance questions.
+- Use `summary` when unsure.
+"""
+
+FOLLOWUP_RESPONSE_PROMPT = f"""{CORE_FACTS}
+You are the Recommendation Follow-up Agent.
+Use the provided action payload and school/map data to answer clearly.
+Return plain text only.
+"""
+
+EXPORT_RESPONSE_PROMPT = f"""{CORE_FACTS}
+You are the Export Agent.
+Confirm CSV export completion using the provided file path and briefly explain what was exported.
+Return plain text only.
 """
 
 
@@ -288,29 +381,142 @@ class Chatbot:
             except json.JSONDecodeError:
                 return {}
 
-    @staticmethod
-    def _is_greeting(text):
-        lowered = (text or "").strip().lower()
-        return lowered in {"hi", "hello", "hey", "good morning", "good afternoon", "good evening"}
+    def _route_turn(self, user_input, history_text, history):
+        payload = (
+            f"Conversation history:\n{history_text or '(none)'}\n\n"
+            f"Latest user request:\n{user_input}\n\n"
+            f"Current Memory JSON:\n{json.dumps(self.intake_memory, ensure_ascii=True)}\n\n"
+            f"Recommendation state:\n"
+            f"- has_active_recommendations: {self.has_active_recommendations}\n"
+            f"- recommendation_count: {len(self.recommendation_pool)}\n"
+            f"- recommendation_cursor: {self.recommendation_cursor}\n"
+            f"- is_first_turn: {not bool(history)}"
+        )
+        route_data = self._extract_json(self._run_agent(ORCHESTRATOR_PROMPT, payload, temperature=0.1, max_tokens=180))
+        if not isinstance(route_data, dict):
+            route_data = {}
+        route = str(route_data.get("route", "")).strip()
+        should_run_intake = route_data.get("should_run_intake", True)
+        if route not in {
+            "welcome",
+            "intake",
+            "school_specialist",
+            "recommendation",
+            "recommendation_followup",
+            "export_csv",
+            "general_info",
+        }:
+            route = "intake"
+        if not isinstance(should_run_intake, bool):
+            should_run_intake = True
+        return {"route": route, "should_run_intake": should_run_intake}
 
-    @staticmethod
-    def _is_more_request(text):
-        lowered = (text or "").lower()
-        return any(token in lowered for token in ["show more", "more schools", "next 3", "next three", "more options"])
+    def _run_intake_turn(self, user_input, history_text):
+        intake_payload = (
+            f"Conversation history:\n{history_text or '(none)'}\n\n"
+            f"Latest user request:\n{user_input}\n\n"
+            f"Current Memory JSON:\n{json.dumps(self.intake_memory, ensure_ascii=True)}"
+        )
+        intake = self._extract_json(self._run_agent(INTAKE_PROMPT, intake_payload, temperature=0.15, max_tokens=380))
+        if not isinstance(intake, dict):
+            intake = {"stage": "collecting", "profile": {}, "missing_fields": [], "next_topic": "other_preferences", "next_question": ""}
+        self.last_intake = intake
+        self._merge_intake_memory(intake)
+        return intake
 
-    @staticmethod
-    def _is_compare_request(text):
-        return "compare" in (text or "").lower()
+    def _run_recommendation_specialists(self, user_input, history_text):
+        specialist_payload = (
+            f"Conversation history:\n{history_text or '(none)'}\n\n"
+            f"Latest user request:\n{user_input}\n\n"
+            f"Intake JSON:\n{json.dumps(self.last_intake, ensure_ascii=True)}\n\n"
+            f"Current Memory JSON:\n{json.dumps(self.intake_memory, ensure_ascii=True)}"
+        )
 
-    @staticmethod
-    def _is_map_request(text):
-        lowered = (text or "").lower()
-        return any(token in lowered for token in ["map", "directions", "route"])
+        with ThreadPoolExecutor(max_workers=3) as executor:
+            eligibility_future = executor.submit(self._run_agent, ELIGIBILITY_PROMPT, specialist_payload, 0.2, 380)
+            match_future = executor.submit(self._run_agent, MATCH_PROMPT, specialist_payload, 0.3, 520)
+            map_future = executor.submit(self._run_agent, MAP_PROMPT, specialist_payload, 0.2, 380)
+            eligibility = self._extract_json(eligibility_future.result())
+            match = self._extract_json(match_future.result())
+            map_data = self._extract_json(map_future.result())
 
-    @staticmethod
-    def _is_export_request(text):
-        lowered = (text or "").lower()
-        return "export" in lowered or "csv" in lowered or "download" in lowered
+        self.last_eligibility = eligibility if isinstance(eligibility, dict) else {}
+        self.last_map_data = map_data if isinstance(map_data, dict) else {}
+        self.recommendation_pool = self._build_recommendation_pool(match)
+        if not self.recommendation_pool:
+            recovery = self._extract_json(self._run_agent(MATCH_RECOVERY_PROMPT, specialist_payload, temperature=0.35, max_tokens=520))
+            self.recommendation_pool = self._build_recommendation_pool(recovery)
+        self.has_active_recommendations = bool(self.recommendation_pool)
+
+    def _render_recommendations_with_agent(self, user_input, history_text):
+        top_schools = self.recommendation_pool[:4]
+        self.recommendation_cursor = min(4, len(self.recommendation_pool))
+        payload = (
+            f"Conversation history:\n{history_text or '(none)'}\n\n"
+            f"Latest user request:\n{user_input}\n\n"
+            f"Eligibility JSON:\n{json.dumps(self.last_eligibility, ensure_ascii=True)}\n\n"
+            f"Top schools JSON:\n{json.dumps(top_schools, ensure_ascii=True)}\n\n"
+            f"Map JSON:\n{json.dumps(self.last_map_data, ensure_ascii=True)}"
+        )
+        return self._run_agent(RECOMMENDATION_RESPONSE_PROMPT, payload, temperature=0.45, max_tokens=360)
+
+    def _run_followup_action(self, user_input, history_text):
+        payload = (
+            f"Conversation history:\n{history_text or '(none)'}\n\n"
+            f"Latest user request:\n{user_input}\n\n"
+            f"Current recommendation count: {len(self.recommendation_pool)}\n"
+        )
+        action_data = self._extract_json(self._run_agent(FOLLOWUP_ACTION_PROMPT, payload, temperature=0.1, max_tokens=140))
+        if not isinstance(action_data, dict):
+            action_data = {}
+        action = str(action_data.get("action", "summary")).strip()
+        if action not in {"show_more", "compare", "map", "summary"}:
+            action = "summary"
+        indexes = action_data.get("indexes", [])
+        if not isinstance(indexes, list):
+            indexes = []
+        parsed_indexes = []
+        for idx in indexes:
+            try:
+                num = int(idx)
+            except (TypeError, ValueError):
+                continue
+            if 1 <= num <= len(self.recommendation_pool) and num not in parsed_indexes:
+                parsed_indexes.append(num)
+        action_data["action"] = action
+        action_data["indexes"] = parsed_indexes[:3]
+        return action_data
+
+    def _build_followup_payload(self, action_data):
+        action = action_data.get("action", "summary")
+        if action == "show_more":
+            start = self.recommendation_cursor
+            end = min(start + 3, len(self.recommendation_pool))
+            schools = self.recommendation_pool[start:end]
+            self.recommendation_cursor = end
+            return {
+                "action": "show_more",
+                "schools": schools,
+                "has_more": end < len(self.recommendation_pool),
+            }
+        if action == "compare":
+            indexes = action_data.get("indexes", [])
+            if not indexes:
+                indexes = [1, 2, 3][: min(3, len(self.recommendation_pool))]
+            schools = []
+            for i in indexes:
+                if 1 <= i <= len(self.recommendation_pool):
+                    school = dict(self.recommendation_pool[i - 1])
+                    school["rank"] = i
+                    schools.append(school)
+            return {"action": "compare", "schools": schools}
+        if action == "map":
+            return {
+                "action": "map",
+                "schools": self.recommendation_pool[:6],
+                "map_data": self.last_map_data,
+            }
+        return {"action": "summary", "schools": self.recommendation_pool[:3]}
 
     @staticmethod
     def _normalize_school(entry):
@@ -374,105 +580,9 @@ class Chatbot:
         if next_topic and next_topic != "none" and next_topic not in self.intake_memory["asked_topics"]:
             self.intake_memory["asked_topics"].append(next_topic)
 
-    def _has_minimum_intake(self):
-        profile = self.intake_memory.get("profile", {})
-        return bool(str(profile.get("target_grade", "")).strip()) and bool(str(profile.get("zip_or_neighborhood", "")).strip())
-
     @staticmethod
     def _school_map_link(name, neighborhood="Boston"):
         return f"https://www.google.com/maps/search/?api=1&query={quote_plus((name + ' ' + neighborhood).strip())}"
-
-    def _format_school_card(self, idx, school, best=False):
-        title = f"{idx}. {school['name']}"
-        if best:
-            title += " (Best recommendation)"
-        lines = [f"- {title}"]
-        for label, key in [
-            ("Neighborhood", "neighborhood"),
-            ("Grades", "grades"),
-            ("Language programs", "language_programs"),
-            ("Special education", "special_education_services"),
-            ("After-school", "after_school"),
-            ("Hours", "hours"),
-            ("Why it may fit", "rationale"),
-        ]:
-            if school.get(key):
-                lines.append(f"- {label}: {school[key]}")
-        lines.append(f"- Map: {self._school_map_link(school['name'], school.get('neighborhood') or 'Boston')}")
-        return "\n".join(lines)
-
-    def _format_initial_recommendations(self):
-        best = self.recommendation_pool[0]
-        others = self.recommendation_pool[1:4]
-        self.recommendation_cursor = 4
-
-        parts = [
-            "Here is one best recommendation plus three additional eligible schools (unordered).",
-            "",
-            "Best recommendation:",
-            self._format_school_card(1, best, best=True),
-        ]
-        if others:
-            parts += ["", "Additional eligible schools (unordered):"]
-            for i, school in enumerate(others, start=2):
-                parts.append(self._format_school_card(i, school))
-
-        parts += [
-            "",
-            "Ask me: `show more`, `compare 1 and 3`, `map options`, or `export csv`.",
-            "Always confirm final eligibility with BPS: https://www.bostonpublicschools.org/",
-        ]
-        return "\n".join(parts)
-
-    def _format_next_batch(self):
-        start = self.recommendation_cursor
-        end = min(start + 3, len(self.recommendation_pool))
-        if start >= len(self.recommendation_pool):
-            return "You have reached the end of the current list."
-
-        lines = [f"Next {end - start} eligible schools (unordered):"]
-        for i in range(start, end):
-            lines.append(self._format_school_card(i + 1, self.recommendation_pool[i]))
-        self.recommendation_cursor = end
-        if end < len(self.recommendation_pool):
-            lines.append("\nSay `show more` to see the next 3.")
-        return "\n".join(lines)
-
-    @staticmethod
-    def _parse_compare_indexes(text, max_index):
-        values = []
-        for token in text.split():
-            if token.isdigit():
-                num = int(token)
-                if 1 <= num <= max_index and num not in values:
-                    values.append(num)
-        return values[:3]
-
-    def _format_comparison(self, indexes):
-        if not indexes:
-            indexes = [1, 2, 3][: min(3, len(self.recommendation_pool))]
-
-        lines = [
-            "| # | School | Grades | Language | Special Ed | After-School | Neighborhood |",
-            "| --- | --- | --- | --- | --- | --- | --- |",
-        ]
-        for idx in indexes:
-            s = self.recommendation_pool[idx - 1]
-            lines.append(
-                f"| {idx} | {s['name']} | {s.get('grades') or '-'} | {s.get('language_programs') or '-'} | "
-                f"{s.get('special_education_services') or '-'} | {s.get('after_school') or '-'} | {s.get('neighborhood') or '-'} |"
-            )
-        return "Here is a side-by-side comparison:\n\n" + "\n".join(lines)
-
-    def _format_map_options(self):
-        lines = ["Map and route links for your current options:"]
-        for i, school in enumerate(self.recommendation_pool[:6], start=1):
-            lines.append(f"- {i}. {school['name']}: {self._school_map_link(school['name'], school.get('neighborhood') or 'Boston')}")
-
-        steps = self.last_map_data.get("map_export_steps", [])
-        if isinstance(steps, list) and steps:
-            lines += ["", "Suggested map export steps:"] + [f"- {step}" for step in steps[:4]]
-        return "\n".join(lines)
 
     def _export_recommendations_csv(self):
         filename = f"bps_recommendations_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv"
@@ -519,8 +629,11 @@ class Chatbot:
 
     def get_response(self, user_input, history=None):
         history_text = self._build_history_text(history)
+        route_data = self._route_turn(user_input, history_text, history)
+        route = route_data["route"]
+        should_run_intake = route_data["should_run_intake"]
 
-        if not history and self._is_greeting(user_input):
+        if route == "welcome":
             return self._run_agent(
                 GREETING_PROMPT,
                 "Start the conversation with a warm, concise welcome.",
@@ -528,37 +641,12 @@ class Chatbot:
                 max_tokens=120,
             )
 
-        if self.has_active_recommendations:
-            if self._is_export_request(user_input):
-                return self._export_recommendations_csv()
-            if self._is_compare_request(user_input):
-                return self._format_comparison(self._parse_compare_indexes(user_input, len(self.recommendation_pool)))
-            if self._is_map_request(user_input):
-                return self._format_map_options()
-            if self._is_more_request(user_input):
-                return self._format_next_batch()
+        if should_run_intake:
+            self._run_intake_turn(user_input, history_text)
 
-        intake_payload = (
-            f"Conversation history:\n{history_text or '(none)'}\n\n"
-            f"Latest user request:\n{user_input}\n\n"
-            f"Current Memory JSON:\n{json.dumps(self.intake_memory, ensure_ascii=True)}"
-        )
-        intake = self._extract_json(self._run_agent(INTAKE_PROMPT, intake_payload, temperature=0.15, max_tokens=380))
-        if not isinstance(intake, dict):
-            intake = {"stage": "collecting", "profile": {}, "missing_fields": [], "next_topic": "other_preferences", "next_question": ""}
+        stage = str(self.intake_memory.get("stage", "collecting")).strip()
 
-        prior_topics = set(self.intake_memory.get("asked_topics", []))
-        next_topic = str(intake.get("next_topic", "")).strip()
-        if next_topic and next_topic in prior_topics and self._has_minimum_intake():
-            intake["stage"] = "ready_for_recommendations"
-
-        self.last_intake = intake
-        self._merge_intake_memory(intake)
-        stage = self.intake_memory.get("stage", intake.get("stage", "collecting"))
-        if self._has_minimum_intake() and stage == "collecting":
-            stage = "ready_for_recommendations"
-
-        if stage in {"collecting", "out_of_scope", "general_info"}:
+        if route in {"intake", "general_info"} or stage in {"out_of_scope", "general_info"}:
             response_payload = (
                 f"Conversation history:\n{history_text or '(none)'}\n\n"
                 f"Latest user request:\n{user_input}\n\n"
@@ -567,47 +655,51 @@ class Chatbot:
             )
             return self._run_agent(INTAKE_RESPONSE_PROMPT, response_payload, temperature=0.5, max_tokens=220)
 
-        specialist_payload = (
+        if route == "school_specialist":
+            specialist_payload = (
+                f"Conversation history:\n{history_text or '(none)'}\n\n"
+                f"Latest user request:\n{user_input}\n\n"
+                f"Intake JSON:\n{json.dumps(self.last_intake, ensure_ascii=True)}\n\n"
+                f"Current Memory JSON:\n{json.dumps(self.intake_memory, ensure_ascii=True)}"
+            )
+            return self._run_agent(SCHOOL_SPECIALIST_PROMPT, specialist_payload, temperature=0.45, max_tokens=180)
+
+        if route == "export_csv":
+            if not self.recommendation_pool:
+                return "I can export once I have a recommendation list. Share grade, Boston ZIP/neighborhood, and top preference first."
+            export_message = self._export_recommendations_csv()
+            export_payload = (
+                f"Latest user request:\n{user_input}\n\n"
+                f"System export result:\n{export_message}\n\n"
+                f"Export path:\n{self.last_export_path or ''}"
+            )
+            return self._run_agent(EXPORT_RESPONSE_PROMPT, export_payload, temperature=0.25, max_tokens=120)
+
+        if route == "recommendation_followup" and self.recommendation_pool:
+            action_data = self._run_followup_action(user_input, history_text)
+            followup_payload = self._build_followup_payload(action_data)
+            response_payload = (
+                f"Latest user request:\n{user_input}\n\n"
+                f"Follow-up action JSON:\n{json.dumps(followup_payload, ensure_ascii=True)}"
+            )
+            return self._run_agent(FOLLOWUP_RESPONSE_PROMPT, response_payload, temperature=0.4, max_tokens=280)
+
+        if route == "recommendation":
+            self._run_recommendation_specialists(user_input, history_text)
+            if not self.recommendation_pool:
+                recovery_payload = (
+                    f"Conversation history:\n{history_text or '(none)'}\n\n"
+                    f"Latest user request:\n{user_input}\n\n"
+                    f"Intake JSON:\n{json.dumps(self.last_intake, ensure_ascii=True)}\n\n"
+                    f"Current Memory JSON:\n{json.dumps(self.intake_memory, ensure_ascii=True)}"
+                )
+                return self._run_agent(SCHOOL_SPECIALIST_PROMPT, recovery_payload, temperature=0.4, max_tokens=180)
+            return self._render_recommendations_with_agent(user_input, history_text)
+
+        fallback_payload = (
             f"Conversation history:\n{history_text or '(none)'}\n\n"
             f"Latest user request:\n{user_input}\n\n"
             f"Intake JSON:\n{json.dumps(self.last_intake, ensure_ascii=True)}\n\n"
             f"Current Memory JSON:\n{json.dumps(self.intake_memory, ensure_ascii=True)}"
         )
-
-        with ThreadPoolExecutor(max_workers=3) as executor:
-            eligibility_future = executor.submit(self._run_agent, ELIGIBILITY_PROMPT, specialist_payload, 0.2, 380)
-            match_future = executor.submit(self._run_agent, MATCH_PROMPT, specialist_payload, 0.3, 520)
-            map_future = executor.submit(self._run_agent, MAP_PROMPT, specialist_payload, 0.2, 380)
-            eligibility = self._extract_json(eligibility_future.result())
-            match = self._extract_json(match_future.result())
-            map_data = self._extract_json(map_future.result())
-
-        self.last_eligibility = eligibility if isinstance(eligibility, dict) else {}
-        self.last_map_data = map_data if isinstance(map_data, dict) else {}
-
-        self.recommendation_pool = self._build_recommendation_pool(match)
-        if not self.recommendation_pool:
-            recovery = self._extract_json(self._run_agent(MATCH_RECOVERY_PROMPT, specialist_payload, temperature=0.35, max_tokens=520))
-            self.recommendation_pool = self._build_recommendation_pool(recovery)
-
-        self.has_active_recommendations = bool(self.recommendation_pool)
-
-        if not self.recommendation_pool:
-            # Let intake-response agent ask for next best input instead of static fallback text.
-            recovery_intake = {
-                "stage": "collecting",
-                "missing_fields": ["preference details"],
-                "next_question": "Which should I prioritize first: shorter commute, language programs, special education supports, or after-school options?",
-                "profile": self.last_intake.get("profile", {}) if isinstance(self.last_intake, dict) else {},
-            }
-            response_payload = (
-                f"Conversation history:\n{history_text or '(none)'}\n\n"
-                f"Latest user request:\n{user_input}\n\n"
-                f"Intake JSON:\n{json.dumps(recovery_intake, ensure_ascii=True)}"
-            )
-            return self._run_agent(INTAKE_RESPONSE_PROMPT, response_payload, temperature=0.5, max_tokens=220)
-
-        intro = self.last_eligibility.get("eligibility_summary", "") if isinstance(self.last_eligibility, dict) else ""
-        if intro:
-            return f"{intro}\n\n{self._format_initial_recommendations()}"
-        return self._format_initial_recommendations()
+        return self._run_agent(INTAKE_RESPONSE_PROMPT, fallback_payload, temperature=0.45, max_tokens=220)

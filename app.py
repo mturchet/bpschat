@@ -54,9 +54,8 @@ def create_chatbot():
     with gr.Blocks() as demo:
         gr.Markdown(
             """
-            # 6.C395
-            Ask me anything about Boston Public Schools enrollment.
-            If the model is busy, you may see temporary 503 errors; retry after a few seconds.
+            # Boston Public School: Support for Parents and Legal Guardians
+            Ask me anything about Boston Public Schools enrollment that I will try my best to find what your family needs
             """
         )
         chat_window = gr.Chatbot(label="BPS Enrollment Assistant", height=540)
