@@ -415,6 +415,7 @@ class Chatbot:
         }
         self._fast_stage = "greeting"  # greeting | awaiting_choice | filtering | done
         self._avela_eligible = []       # raw Avela results before preference filtering
+        self._early_preferences = ""    # preferences shared before eligibility was ready
 
     # ------------------------------------------------------------------
     # Fast-path helpers (deterministic, no LLM)
@@ -639,6 +640,11 @@ class Chatbot:
                 profile["language_needs"] = lang_name
                 profile["language_uuid"] = lang_uuid
 
+            # Save the full message as early preferences if it has substantial content
+            # beyond just grade/ZIP/language (e.g. mentions of sports, commute, special ed)
+            if len(text.split()) > 6:
+                self._early_preferences = text
+
             has_grade = bool(profile.get("target_grade"))
             has_location = bool(profile.get("zip_or_neighborhood"))
             has_language = bool(profile.get("language_needs"))
@@ -744,6 +750,15 @@ class Chatbot:
 
         if self._avela_eligible:
             self.intake_memory["stage"] = "ready_for_recommendations"
+
+            # If the user shared preferences earlier (before we had grade/ZIP),
+            # skip the choice template and process those preferences now
+            if self._early_preferences:
+                self._fast_stage = "filtering"
+                early = self._early_preferences
+                self._early_preferences = ""  # clear so we don't reprocess
+                return self._parse_preferences_light(early)
+
             self._fast_stage = "awaiting_choice"
             return CHOICE_TEMPLATE
         else:
