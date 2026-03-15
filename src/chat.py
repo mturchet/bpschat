@@ -1,5 +1,6 @@
 import csv
 import json
+import re
 import tempfile
 import ast
 from concurrent.futures import ThreadPoolExecutor
@@ -48,8 +49,11 @@ Key facts:
 GREETING_PROMPT = f"""{CORE_FACTS}
 You are the Welcome Agent.
 Write a warm first message in plain text for a family starting enrollment chat.
-Ask for exactly two required items to begin: child's target grade and Boston ZIP/neighborhood.
-Keep to 2-4 short sentences.
+
+Rules:
+- Welcome the family warmly.
+- Explain that to find eligible schools, you need two things: their child's target grade level (K0, K1, K2, or grades 1-12) and their Boston ZIP code or neighborhood.
+- Keep to 3-4 short sentences. Be warm and concise.
 """
 
 INTAKE_PROMPT = f"""{CORE_FACTS}
@@ -57,7 +61,7 @@ You are the Intake Agent.
 
 Return ONLY valid JSON with this schema:
 {{
-  "stage": "collecting|ready_for_recommendations|out_of_scope|general_info",
+  "stage": "collecting|ready_for_recommendations|filtering|out_of_scope|general_info",
   "profile": {{
     "target_grade": "",
     "zip_or_neighborhood": "",
@@ -75,12 +79,12 @@ Return ONLY valid JSON with this schema:
 }}
 
 Rules:
-- Prefer stage=collecting until you have enough to make recommendations.
-- Set stage=ready_for_recommendations once target_grade + zip_or_neighborhood are known and there are no critical blockers.
-- Do not over-collect optional preferences before moving to recommendations.
-- If user is outside MA/Boston scope, use stage=out_of_scope and provide official state/district resource links.
-- Keep next_question natural and specific to what is still missing.
-- Set next_topic to one of: target_grade, zip_or_neighborhood, language_needs, special_ed_needs, transport_or_commute, after_school_needs, other_preferences, none.
+- Set stage=ready_for_recommendations AS SOON AS target_grade + zip_or_neighborhood are both known. Do not keep collecting optional preferences.
+- Only set stage=collecting if target_grade or zip_or_neighborhood is still missing.
+- Set stage=filtering when the user has asked for help narrowing down or filtering their options.
+- If user provides preferences along with grade+ZIP in the same message, capture ALL of them AND set stage=ready_for_recommendations.
+- If user is outside MA/Boston scope, use stage=out_of_scope.
+- Once stage=ready_for_recommendations, set next_topic=none.
 - Use Current Memory JSON in the user payload.
 - Do NOT re-ask a topic listed in memory.asked_topics unless user asked to revisit it.
 """
@@ -90,13 +94,22 @@ You are the Intake Response Agent.
 Given intake JSON and user message, write a warm, dynamic response.
 
 Rules:
-- If stage=collecting: ask only one focused next question.
+- If stage=collecting: ask only for the specific missing required field (grade or ZIP).
+- If stage=ready_for_recommendations: say you have a list of eligible schools ready. Then offer a clear choice:
+  Option 1: "Show me the schools now" to see the full list right away.
+  Option 2: "Help me filter" to get assistance narrowing down the best options.
+  Then present the following list of optional preference categories they can share to help filter:
+  • Language programs (dual language, ESL, bilingual)
+  • Special education services (IEP, Section 504, ABA)
+  • After-school programs and extracurriculars
+  • Commute or transportation preferences
+  • School schedule or hours
+  • Any other priorities
+  Say: "You can share any or all of these now, or just say 'show me the schools' whenever you're ready to see your options."
+- If stage=filtering: acknowledge what they shared. Ask if they want to add anything else or see results now.
 - If stage=out_of_scope: gently explain scope and include suggested links.
-- Avoid repeating the same template; vary phrasing naturally.
-- Avoid repeating prior details. Use at most one short acknowledgment phrase.
-- Do not restate all known profile fields unless the user explicitly asks for a summary.
 - Return plain text only. Do not return JSON, dicts, or code blocks.
-- Keep response under 120 words.
+- Keep response under 180 words.
 """
 
 ELIGIBILITY_PROMPT = f"""{CORE_FACTS}
@@ -184,11 +197,14 @@ Return ONLY valid JSON:
 
 Rules:
 - Route to `welcome` only when the conversation is just starting.
-- Route to `school_specialist` when required fields are present but preference tradeoffs are still unclear.
-- Route to `recommendation` when enough intake context exists to run recommendation specialists.
+- Route to `recommendation` when the user says anything like "show me the schools", "show me the list", "see my options", "yes show me", "just show me", or any request to see results — AND grade+ZIP are known.
+- Route to `recommendation` when target_grade AND zip_or_neighborhood are known AND the user indicates they want results.
+- Route to `school_specialist` ONLY when the user explicitly says they want help filtering or want to answer more preference questions.
 - Route to `recommendation_followup` for questions about existing options (compare, map, more choices, tradeoffs).
 - Route to `export_csv` when user asks to export/download list.
+- Route to `intake` when required fields (grade, ZIP) are still missing.
 - Keep `should_run_intake=true` for most turns so intake memory stays current.
+- When in doubt and required fields are present, prefer `recommendation` over `school_specialist`.
 """
 
 SCHOOL_SPECIALIST_PROMPT = f"""{CORE_FACTS}
@@ -245,6 +261,57 @@ Confirm CSV export completion using the provided file path and briefly explain w
 Return plain text only.
 """
 
+# ---------------------------------------------------------------------------
+# Fast-path templates (no LLM needed)
+# ---------------------------------------------------------------------------
+
+GREETING_TEMPLATE = (
+    "Welcome to the Boston Public Schools enrollment assistant! I'm here to help "
+    "you find the right school for your child.\n\n"
+    "To get started, I just need two things:\n"
+    "1. **Your child's grade level** (K0, K1, K2, or grades 1–12)\n"
+    "2. **Your Boston address or ZIP code**\n\n"
+    "Go ahead and share those whenever you're ready!"
+)
+
+CHOICE_TEMPLATE = (
+    "Great news — I have a list of **eligible schools** for your child! You have two options:\n\n"
+    "**Option 1:** Say **\"show me the schools\"** to see the full list right now.\n\n"
+    "**Option 2:** Share some preferences so I can help find the best fit. "
+    "Here are the categories I can filter on:\n"
+    "• **Language programs** (dual language, bilingual, ESL)\n"
+    "• **Special education services** (IEP, Section 504, ABA)\n"
+    "• **After-school programs & extracurriculars**\n"
+    "• **Sports**\n"
+    "• **Commute or transportation preferences**\n"
+    "• **School schedule / hours**\n\n"
+    "You can share as many or as few as you'd like — all at once is fine! "
+    "Or just say **\"show me the schools\"** whenever you're ready to see your options."
+)
+
+PREFERENCES_RECEIVED_TEMPLATE = (
+    "Got it — I've noted your preferences. "
+    "Would you like to add anything else, or shall I show you the schools that match?"
+)
+
+NO_SCHOOLS_TEMPLATE = (
+    "I wasn't able to find eligible schools for that grade and address combination. "
+    "Please double-check your information, or contact Boston Public Schools directly "
+    "at (617) 635-9010 for assistance."
+)
+
+# Regex patterns for fast extraction
+_GRADE_PATTERN = re.compile(
+    r"""(?:grade\s*)?
+        (K0|K1|K2|kindergarten|
+         \d{1,2}(?:st|nd|rd|th)?
+        )
+        (?:\s*grade)?""",
+    re.IGNORECASE | re.VERBOSE,
+)
+
+_ZIP_PATTERN = re.compile(r"\b(02\d{3})\b")
+
 
 class Chatbot:
     def __init__(self):
@@ -277,6 +344,240 @@ class Chatbot:
             "asked_topics": [],
             "stage": "collecting",
         }
+        self._fast_stage = "greeting"  # greeting | awaiting_choice | filtering | done
+        self._avela_eligible = []       # raw Avela results before preference filtering
+
+    # ------------------------------------------------------------------
+    # Fast-path helpers (deterministic, no LLM)
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _fast_extract_grade(text: str) -> str:
+        """Extract grade from free text. Returns normalized grade or empty string."""
+        if not text:
+            return ""
+        t = text.strip()
+        m = _GRADE_PATTERN.search(t)
+        if not m:
+            return ""
+        raw = m.group(1).strip().upper()
+        if raw in ("K0", "K1", "K2"):
+            return raw
+        if "KINDERGARTEN" in raw:
+            return "K2"
+        # Strip ordinal suffix
+        num_match = re.match(r"(\d{1,2})", raw)
+        if num_match:
+            n = int(num_match.group(1))
+            if 1 <= n <= 12:
+                return str(n)
+        return ""
+
+    @staticmethod
+    def _fast_extract_zip(text: str) -> str:
+        """Extract a Boston ZIP from free text."""
+        if not text:
+            return ""
+        matches = _ZIP_PATTERN.findall(text)
+        # Prefer last match (handles corrections like "02142, I mean 02125")
+        for m in reversed(matches):
+            return m
+        return ""
+
+    @staticmethod
+    def _is_show_schools_request(text: str) -> bool:
+        """Detect if user wants to see schools now."""
+        t = text.strip().lower()
+        triggers = [
+            "show me", "see the schools", "see my options", "list of schools",
+            "show the schools", "show schools", "see the list", "show me the list",
+            "just show", "give me the schools", "let me see", "ready to see",
+            "show results", "yes please", "yes show", "let's see",
+        ]
+        return any(trigger in t for trigger in triggers)
+
+    @staticmethod
+    def _is_filter_request(text: str) -> bool:
+        """Detect if user wants help filtering."""
+        t = text.strip().lower()
+        triggers = [
+            "help me filter", "narrow down", "more questions", "help me find",
+            "best fit", "personalize", "preferences",
+        ]
+        return any(trigger in t for trigger in triggers)
+
+    def _apply_local_filters(self, schools: list[dict], profile: dict) -> list[dict]:
+        """Filter eligible schools based on user preferences from catalog data."""
+        filtered = list(schools)
+
+        lang = (profile.get("language_needs") or "").strip().lower()
+        if lang and lang not in ("no", "none", "english", "just english", "no preference"):
+            filtered = [s for s in filtered if s.get("language_programs", "").strip()] or filtered
+
+        sped = (profile.get("special_ed_needs") or "").strip().lower()
+        if sped and sped not in ("no", "none", "no preference"):
+            filtered = [s for s in filtered if s.get("special_education_services", "").strip()] or filtered
+
+        after = (profile.get("after_school_needs") or "").strip().lower()
+        if after and after not in ("no", "none", "no preference"):
+            filtered = [s for s in filtered if s.get("after_school", "").strip()] or filtered
+
+        return filtered
+
+    def _format_results_text(self, schools: list[dict]) -> str:
+        """Format school results as plain text with best recommendation + additional options."""
+        if not schools:
+            return NO_SCHOOLS_TEMPLATE
+
+        lines = []
+
+        # Best recommendation
+        best = schools[0]
+        lines.append("⭐ **Best Recommendation:**")
+        best_line = f"**{best['name']}**"
+        if best.get("neighborhood"):
+            best_line += f" ({best['neighborhood']})"
+        if best.get("grades"):
+            best_line += f" — Grades: {best['grades']}"
+        lines.append(best_line)
+        if best.get("rationale"):
+            lines.append(f"_{best['rationale']}_")
+
+        details = []
+        if best.get("special_education_services"):
+            details.append(f"Special Ed: {best['special_education_services']}")
+        if best.get("language_programs"):
+            details.append(f"Language: {best['language_programs']}")
+        if best.get("after_school"):
+            detail_text = best["after_school"][:100]
+            details.append(f"After-school: {detail_text}")
+        if best.get("hours"):
+            details.append(f"Hours: {best['hours']}")
+        if details:
+            lines.append("  " + " | ".join(details))
+        lines.append("")
+
+        # Additional options (up to 3)
+        additional = schools[1:4]
+        if additional:
+            lines.append("**Additional Eligible Schools:**")
+            for s in additional:
+                entry = f"• **{s['name']}**"
+                if s.get("neighborhood"):
+                    entry += f" ({s['neighborhood']})"
+                if s.get("grades"):
+                    entry += f" — Grades: {s['grades']}"
+                lines.append(entry)
+            lines.append("")
+
+        remaining = len(schools) - 4
+        if remaining > 0:
+            lines.append(f"_{remaining} more eligible schools available. Say **\"show more\"** to see them, "
+                         f"or ask me to **compare**, **filter**, or **export** your options._")
+            lines.append("")
+
+        lines.append("---")
+        lines.append("**Source:** Eligibility data from [Boston Public Schools](https://www.bostonpublicschools.org) "
+                     "via Avela.")
+        lines.append("**Disclaimer:** This tool is for informational use only. "
+                     "Always confirm eligibility with Boston Public Schools directly.")
+
+        return "\n".join(lines)
+
+    def _fast_path(self, user_input: str, history: list) -> str | None:
+        """
+        Handle deterministic stages without LLM calls.
+        Returns a response string, or None to fall through to the agent system.
+        """
+        text = (user_input or "").strip()
+        is_first_turn = not history
+
+        # --- Stage: greeting ---
+        if self._fast_stage == "greeting":
+            # Extract grade and ZIP from the message
+            grade = self._fast_extract_grade(text)
+            zip_code = self._fast_extract_zip(text)
+
+            if is_first_turn and not grade and not zip_code:
+                # Generic greeting, no info provided
+                return GREETING_TEMPLATE
+
+            # User provided some info — extract what we can
+            if grade:
+                self.intake_memory["profile"]["target_grade"] = grade
+            if zip_code:
+                self.intake_memory["profile"]["zip_or_neighborhood"] = zip_code
+
+            profile = self.intake_memory["profile"]
+
+            if profile["target_grade"] and profile["zip_or_neighborhood"]:
+                # Have both — call Avela and move to choice
+                self._avela_eligible = avela_get_schools(
+                    target_grade=profile["target_grade"],
+                    zip_or_neighborhood=profile["zip_or_neighborhood"],
+                )
+                if self._avela_eligible:
+                    self.intake_memory["stage"] = "ready_for_recommendations"
+                    self._fast_stage = "awaiting_choice"
+                    return CHOICE_TEMPLATE
+                else:
+                    self._fast_stage = "done"
+                    return NO_SCHOOLS_TEMPLATE
+            elif profile["target_grade"] and not profile["zip_or_neighborhood"]:
+                return f"Thanks — grade {profile['target_grade']}, got it! What's your Boston address or ZIP code?"
+            elif profile["zip_or_neighborhood"] and not profile["target_grade"]:
+                return f"Thanks — {profile['zip_or_neighborhood']}, got it! What grade will your child be entering? (K0, K1, K2, or 1–12)"
+            else:
+                # First turn with info we can't parse — show greeting
+                if is_first_turn:
+                    return GREETING_TEMPLATE
+                return None  # fall through to agents
+
+        # --- Stage: awaiting_choice ---
+        if self._fast_stage == "awaiting_choice":
+            if self._is_show_schools_request(text):
+                # Show results immediately
+                self.recommendation_pool = self._avela_eligible
+                self.has_active_recommendations = True
+                self.recommendation_cursor = min(4, len(self.recommendation_pool))
+                self._fast_stage = "done"
+                return self._format_results_text(self.recommendation_pool)
+
+            if self._is_filter_request(text):
+                self._fast_stage = "filtering"
+                self.intake_memory["stage"] = "filtering"
+                return (
+                    "I'd love to help narrow things down! Share any preferences from the list above — "
+                    "language programs, special ed, after-school, sports, commute, or anything else. "
+                    "You can give me everything at once, or one at a time."
+                )
+
+            # User might be providing preferences directly
+            # Check if they gave info that looks like preferences
+            has_content = len(text.split()) >= 2
+            if has_content and not self._is_show_schools_request(text):
+                self._fast_stage = "filtering"
+                # Fall through to agents for preference parsing
+                return None
+
+            return None  # fall through to agents
+
+        # --- Stage: filtering ---
+        if self._fast_stage == "filtering":
+            if self._is_show_schools_request(text):
+                # Apply filters and show
+                filtered = self._apply_local_filters(self._avela_eligible, self.intake_memory["profile"])
+                self.recommendation_pool = filtered
+                self.has_active_recommendations = True
+                self.recommendation_cursor = min(4, len(self.recommendation_pool))
+                self._fast_stage = "done"
+                return self._format_results_text(self.recommendation_pool)
+
+            # Otherwise fall through to agents for preference parsing and conversation
+            return None
+
+        # --- Stage: done (agent system handles everything from here) ---
+        return None
 
     def _get_client(self):
         if self.provider == "openai":
@@ -658,18 +959,20 @@ class Chatbot:
         return path
 
     def get_response(self, user_input, history=None):
+        # --- Try fast path first (deterministic, no LLM) ---
+        fast_response = self._fast_path(user_input, history)
+        if fast_response is not None:
+            return fast_response
+
+        # --- Fall through to agent system for complex reasoning ---
         history_text = self._build_history_text(history)
         route_data = self._route_turn(user_input, history_text, history)
         route = route_data["route"]
         should_run_intake = route_data["should_run_intake"]
 
         if route == "welcome":
-            return self._run_agent(
-                GREETING_PROMPT,
-                "Start the conversation with a warm, concise welcome.",
-                temperature=0.6,
-                max_tokens=120,
-            )
+            # Fast path should have caught this, but just in case
+            return GREETING_TEMPLATE
 
         if should_run_intake:
             self._run_intake_turn(user_input, history_text)
