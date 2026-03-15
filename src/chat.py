@@ -17,6 +17,7 @@ from config import (
     LLM_PROVIDER,
     OPENAI_API_KEY,
     OPENAI_MODEL,
+    LIGHT_MODEL,
 )
 
 from src.avela_client import get_eligible_schools as avela_get_schools
@@ -496,7 +497,7 @@ class Chatbot:
     def _light_llm_response(self, user_input: str, have: dict, missing: list) -> str:
         """
         Single lightweight LLM call for natural acknowledgment + asking for missing info.
-        Much cheaper than the full 3-agent pipeline.
+        Uses the smaller model for speed and token efficiency.
         """
         payload = (
             f"User said: {user_input}\n\n"
@@ -504,7 +505,7 @@ class Chatbot:
             f"Still needed: {', '.join(missing)}"
         )
         try:
-            return self._run_agent(LIGHT_RESPONSE_PROMPT, payload, temperature=0.5, max_tokens=100)
+            return self._run_agent(LIGHT_RESPONSE_PROMPT, payload, temperature=0.5, max_tokens=100, use_light=True)
         except Exception:
             missing_text = " and ".join(missing)
             return f"Thanks for that! I still need your {missing_text} to look up eligible schools."
@@ -512,7 +513,7 @@ class Chatbot:
     def _parse_preferences_light(self, user_input: str) -> str:
         """
         Single LLM call to parse preferences, answer questions about terms,
-        and respond naturally. Much cheaper than the full agent pipeline.
+        and respond naturally. Uses the smaller model for speed.
         """
         profile = self.intake_memory.get("profile", {})
         payload = (
@@ -525,7 +526,7 @@ class Chatbot:
             f"Number of eligible schools we have: {len(self._avela_eligible)}"
         )
         try:
-            return self._run_agent(PREFERENCE_PARSE_PROMPT, payload, temperature=0.5, max_tokens=200)
+            return self._run_agent(PREFERENCE_PARSE_PROMPT, payload, temperature=0.5, max_tokens=200, use_light=True)
         except Exception:
             return (
                 "Thanks for sharing that! I've noted your preferences. "
@@ -767,7 +768,7 @@ class Chatbot:
                 lines.append(f"Assistant: {bot_msg}")
         return "\n".join(lines).strip()
 
-    def _run_agent(self, system_prompt, payload, temperature=0.2, max_tokens=450):
+    def _run_agent(self, system_prompt, payload, temperature=0.2, max_tokens=450, use_light=False):
         messages = [
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": payload},
@@ -782,8 +783,11 @@ class Chatbot:
             )
             return self._coerce_to_text(response.choices[0].message.content).strip()
 
+        # For HuggingFace: use light model for simple tasks, heavy model for complex reasoning
+        model_id = LIGHT_MODEL if use_light else self.hf_model_id
         response = client.chat_completion(
             messages=messages,
+            model=model_id,
             max_tokens=max_tokens,
             temperature=temperature,
         )

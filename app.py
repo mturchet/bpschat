@@ -6,11 +6,14 @@ import os
 
 import gradio as gr
 
-from src.chat import Chatbot
+from src.chat import Chatbot, GREETING_TEMPLATE
 
 
 def create_chatbot():
     chatbot = Chatbot()
+
+    # Initial greeting shown when page loads
+    initial_history = [["", GREETING_TEMPLATE]]
 
     def history_to_pairs(history):
         """
@@ -35,6 +38,8 @@ def create_chatbot():
     def respond(message, history):
         history = history or []
         model_history = history_to_pairs(history)
+        # Filter out the initial empty-user greeting from model history
+        model_history = [[u, b] for u, b in model_history if u]
         try:
             response = chatbot.get_response(message, model_history)
         except Exception as exc:
@@ -43,7 +48,7 @@ def create_chatbot():
                 f"Technical details: {exc}"
             )
 
-        updated_history = model_history + [[message, response]]
+        updated_history = history + [[message, response]]
         export_path = chatbot.consume_last_export_path()
         downloadable_file = export_path if export_path and os.path.exists(export_path) else None
         return "", updated_history, downloadable_file
@@ -51,14 +56,19 @@ def create_chatbot():
     with gr.Blocks() as demo:
         gr.Markdown(
             """
-            # Boston Public School: Support for Parents and Legal Guardians
-            Ask me anything about Boston Public Schools enrollment that I will try my best to find what your family needs
+            # Boston Public Schools Enrollment Assistant
+            *Helping Boston families find the right school — powered by real BPS eligibility data.*
             """
         )
-        chat_window = gr.Chatbot(label="BPS Enrollment Assistant", height=540, type="tuples")
+        chat_window = gr.Chatbot(
+            label="BPS Enrollment Assistant",
+            height=540,
+            type="tuples",
+            value=initial_history,
+        )
         message_box = gr.Textbox(
             label="Your message",
-            placeholder="Example: My child is entering K2 and we live in 02124",
+            placeholder="Example: My child is entering K2 and we live at 100 Warren St, Boston 02119",
         )
         with gr.Row():
             send_btn = gr.Button("Send", variant="primary")
@@ -70,10 +80,10 @@ def create_chatbot():
         )
         gr.Examples(
             examples=[
-                "My child is entering 3rd grade and we live in Roxbury. We want Spanish bilingual options.",
+                "My child is entering 3rd grade and we live at 100 Warren St, Boston 02119. We speak English at home.",
+                "What is a Section 504 plan?",
                 "show more",
                 "compare 1 and 3",
-                "map options",
                 "export csv",
             ],
             inputs=message_box,
@@ -90,7 +100,7 @@ def create_chatbot():
             outputs=[message_box, chat_window, export_file],
         )
         clear_btn.click(
-            fn=lambda: (chatbot.reset_state() or "", [], None),
+            fn=lambda: (chatbot.reset_state() or "", initial_history, None),
             outputs=[message_box, chat_window, export_file],
         )
 
