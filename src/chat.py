@@ -506,7 +506,7 @@ class Chatbot:
             f"Still needed: {', '.join(missing)}"
         )
         try:
-            return self._run_agent(LIGHT_RESPONSE_PROMPT, payload, temperature=0.5, max_tokens=100, use_light=True)
+            return self._run_agent(LIGHT_RESPONSE_PROMPT, payload, temperature=0.5, max_tokens=100, use_light=False)
         except Exception:
             missing_text = " and ".join(missing)
             return f"Thanks for that! I still need your {missing_text} to look up eligible schools."
@@ -527,7 +527,7 @@ class Chatbot:
             f"Number of eligible schools we have: {len(self._avela_eligible)}"
         )
         try:
-            return self._run_agent(PREFERENCE_PARSE_PROMPT, payload, temperature=0.5, max_tokens=200, use_light=True)
+            return self._run_agent(PREFERENCE_PARSE_PROMPT, payload, temperature=0.5, max_tokens=200, use_light=False)
         except Exception:
             return (
                 "Thanks for sharing that! I've noted your preferences. "
@@ -650,7 +650,7 @@ class Chatbot:
             has_language = bool(profile.get("language_needs"))
 
             # Nothing provided on first turn → greeting
-            if is_first_turn and not has_grade and not has_location:
+            if is_first_turn and not has_grade and not has_location and not has_language and not self._early_preferences:
                 return GREETING_TEMPLATE
 
             # Have all three → call Avela and offer choice
@@ -673,9 +673,6 @@ class Chatbot:
                 missing.append("home address or Boston ZIP code")
             if not has_language:
                 missing.append("home language (language parents use to communicate with child at home)")
-
-            if is_first_turn and not has_grade and not has_location:
-                return GREETING_TEMPLATE
 
             return self._light_llm_response(text, have, missing)
 
