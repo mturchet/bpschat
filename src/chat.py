@@ -600,8 +600,8 @@ class Chatbot:
 
         remaining = len(schools) - 4
         if remaining > 0:
-            lines.append(f"_{remaining} more eligible schools available. Say **\"show more\"** to see them, "
-                         f"or ask me to **compare**, **filter**, or **export** your options._")
+            lines.append(f"_There are {remaining} more eligible schools — just ask to see more, "
+                         f"or I can help you **compare**, **filter**, or **export** your options._")
             lines.append("")
 
         lines.append("---")
@@ -730,6 +730,43 @@ class Chatbot:
             return None
 
         # --- Stage: done ---
+        # Handle "show more" deterministically instead of falling through to agents
+        if self._fast_stage == "done" and self.recommendation_pool:
+            t = text.strip().lower()
+            if "show more" in t or "more schools" in t or "see more" in t or "next" in t:
+                start = self.recommendation_cursor
+                end = min(start + 4, len(self.recommendation_pool))
+                if start >= len(self.recommendation_pool):
+                    return "You've seen all the eligible schools I found. Would you like to compare any of them, or is there anything else I can help with?"
+                next_batch = self.recommendation_pool[start:end]
+                self.recommendation_cursor = end
+                remaining = len(self.recommendation_pool) - end
+
+                lines = [f"**More Eligible Schools ({start + 1}–{end} of {len(self.recommendation_pool)}):**\n"]
+                for s in next_batch:
+                    entry = f"• **{s['name']}**"
+                    if s.get("neighborhood"):
+                        entry += f" ({s['neighborhood']})"
+                    if s.get("grades"):
+                        entry += f" — Grades: {s['grades']}"
+                    lines.append(entry)
+                    details = []
+                    if s.get("special_education_services"):
+                        details.append(f"Special Ed: {s['special_education_services']}")
+                    if s.get("language_programs"):
+                        details.append(f"Language: {s['language_programs']}")
+                    if s.get("after_school"):
+                        details.append(f"After-school: {s['after_school'][:80]}")
+                    if details:
+                        lines.append("  " + " | ".join(details))
+
+                if remaining > 0:
+                    lines.append(f"\n_{remaining} more available. Say **\"show more\"** to continue._")
+                else:
+                    lines.append("\n_That's all the eligible schools I found. Would you like to compare any of them?_")
+
+                return "\n".join(lines)
+
         return None
 
     def _call_avela_and_offer_choice(self) -> str:
