@@ -18,6 +18,8 @@ from config import (
     OPENAI_MODEL,
 )
 
+from src.avela_client import get_eligible_schools as avela_get_schools
+
 CORE_FACTS = """You are a helpful assistant for Boston Public Schools (BPS) enrollment guidance.
 You help parents and legal guardians understand enrollment options, eligibility basics, and tradeoffs.
 You must be warm, concise, and transparent about uncertainty.
@@ -432,20 +434,48 @@ class Chatbot:
             f"Current Memory JSON:\n{json.dumps(self.intake_memory, ensure_ascii=True)}"
         )
 
-        with ThreadPoolExecutor(max_workers=3) as executor:
-            eligibility_future = executor.submit(self._run_agent, ELIGIBILITY_PROMPT, specialist_payload, 0.2, 380)
-            match_future = executor.submit(self._run_agent, MATCH_PROMPT, specialist_payload, 0.3, 520)
-            map_future = executor.submit(self._run_agent, MAP_PROMPT, specialist_payload, 0.2, 380)
-            eligibility = self._extract_json(eligibility_future.result())
-            match = self._extract_json(match_future.result())
-            map_data = self._extract_json(map_future.result())
+        # --- Try Avela real eligibility first ---
+        avela_schools = []
+        profile = self.intake_memory.get("profile", {})
+        target_grade = profile.get("target_grade", "")
+        zip_or_neighborhood = profile.get("zip_or_neighborhood", "")
+        if target_grade and zip_or_neighborhood:
+            try:
+                avela_schools = avela_get_schools(
+                    target_grade=target_grade,
+                    zip_or_neighborhood=zip_or_neighborhood,
+                )
+            except Exception:
+                avela_schools = []
 
-        self.last_eligibility = eligibility if isinstance(eligibility, dict) else {}
-        self.last_map_data = map_data if isinstance(map_data, dict) else {}
-        self.recommendation_pool = self._build_recommendation_pool(match)
-        if not self.recommendation_pool:
-            recovery = self._extract_json(self._run_agent(MATCH_RECOVERY_PROMPT, specialist_payload, temperature=0.35, max_tokens=520))
-            self.recommendation_pool = self._build_recommendation_pool(recovery)
+        if avela_schools:
+            # Use real Avela data for recommendations
+            self.recommendation_pool = avela_schools
+            # Still run eligibility and map agents for context
+            with ThreadPoolExecutor(max_workers=2) as executor:
+                eligibility_future = executor.submit(self._run_agent, ELIGIBILITY_PROMPT, specialist_payload, 0.2, 380)
+                map_future = executor.submit(self._run_agent, MAP_PROMPT, specialist_payload, 0.2, 380)
+                eligibility = self._extract_json(eligibility_future.result())
+                map_data = self._extract_json(map_future.result())
+            self.last_eligibility = eligibility if isinstance(eligibility, dict) else {}
+            self.last_map_data = map_data if isinstance(map_data, dict) else {}
+        else:
+            # Fallback: use LLM Match Agent (original behavior)
+            with ThreadPoolExecutor(max_workers=3) as executor:
+                eligibility_future = executor.submit(self._run_agent, ELIGIBILITY_PROMPT, specialist_payload, 0.2, 380)
+                match_future = executor.submit(self._run_agent, MATCH_PROMPT, specialist_payload, 0.3, 520)
+                map_future = executor.submit(self._run_agent, MAP_PROMPT, specialist_payload, 0.2, 380)
+                eligibility = self._extract_json(eligibility_future.result())
+                match = self._extract_json(match_future.result())
+                map_data = self._extract_json(map_future.result())
+
+            self.last_eligibility = eligibility if isinstance(eligibility, dict) else {}
+            self.last_map_data = map_data if isinstance(map_data, dict) else {}
+            self.recommendation_pool = self._build_recommendation_pool(match)
+            if not self.recommendation_pool:
+                recovery = self._extract_json(self._run_agent(MATCH_RECOVERY_PROMPT, specialist_payload, temperature=0.35, max_tokens=520))
+                self.recommendation_pool = self._build_recommendation_pool(recovery)
+
         self.has_active_recommendations = bool(self.recommendation_pool)
 
     def _render_recommendations_with_agent(self, user_input, history_text):
