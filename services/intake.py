@@ -17,6 +17,7 @@ import re
 from typing import Any, Optional
 
 from . import eligibility
+from . import avela_eligibility
 
 # -----------------------------------------------------------------------------
 # Session state (in-memory per Gradio session)
@@ -169,7 +170,7 @@ def step(state: dict[str, Any], user_message: str) -> tuple[dict[str, Any], tupl
             state["street_number"] = street_number
         if street_name:
             state["street_name"] = street_name
-        result = eligibility.get_eligible_schools(
+        result = avela_eligibility.get_eligible_schools(
             grade=state["grade"],
             zip_code=zip_candidate,
             street_number=state.get("street_number") or "1",

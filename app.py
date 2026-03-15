@@ -21,7 +21,7 @@ except ImportError:
 
 import gradio as gr
 
-from services import eligibility, intake, llm
+from services import eligibility, avela_eligibility, intake, llm
 
 # -----------------------------------------------------------------------------
 # Session state: in-memory only, keyed by UI session ID (no server-side PII persistence).
@@ -236,7 +236,7 @@ def chat(message: str, history: list, request: gr.Request | None = None) -> tupl
 
     if outcome_kind == "already_have_both":
         if _is_reask_schools_request(user_msg):
-            result = eligibility.get_eligible_schools(
+            result = avela_eligibility.get_eligible_schools(
                 grade=state.get("grade") or "",
                 zip_code=state.get("zip_code") or "",
                 street_number=state.get("street_number") or "1",
