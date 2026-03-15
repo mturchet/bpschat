@@ -262,43 +262,84 @@ Return plain text only.
 """
 
 # ---------------------------------------------------------------------------
-# Fast-path templates (no LLM needed)
+# Fast-path templates and light LLM prompts
 # ---------------------------------------------------------------------------
 
 GREETING_TEMPLATE = (
-    "Welcome to the Boston Public Schools enrollment assistant! I'm here to help "
-    "you find the right school for your child.\n\n"
-    "To get started, I just need two things:\n"
-    "1. **Your child's grade level** (K0, K1, K2, or grades 1–12)\n"
-    "2. **Your Boston address or ZIP code**\n\n"
-    "Go ahead and share those whenever you're ready!"
+    "Hi there! Welcome to the Boston Public Schools enrollment assistant. "
+    "I'm here to help you and your family find the right school.\n\n"
+    "To look up which schools your child is eligible for, I'll need a few things:\n\n"
+    "1. **Grade applying for** — K0 (3 yrs old), K1 (4 yrs old), K2 (5 yrs old), or grades 1–12\n"
+    "2. **Your home address** — Because BPS uses a home-based assignment system, "
+    "your street address helps me provide the most accurate results. If you're not "
+    "comfortable sharing your full address, I can still provide near-accurate results "
+    "with just your ZIP code.\n"
+    "3. **Home language** — What language do parents or primary caregivers use to "
+    "communicate with your child at home? This helps identify bilingual and language "
+    "support programs your child may be eligible for.\n\n"
+    "Feel free to share all of this at once, or one piece at a time — whatever's easiest!"
 )
 
 CHOICE_TEMPLATE = (
-    "Great news — I have a list of **eligible schools** for your child! You have two options:\n\n"
-    "**Option 1:** Say **\"show me the schools\"** to see the full list right now.\n\n"
-    "**Option 2:** Share some preferences so I can help find the best fit. "
-    "Here are the categories I can filter on:\n"
-    "• **Language programs** (dual language, bilingual, ESL)\n"
-    "• **Special education services** (IEP, Section 504, ABA)\n"
-    "• **After-school programs & extracurriculars**\n"
-    "• **Sports**\n"
-    "• **Commute or transportation preferences**\n"
-    "• **School schedule / hours**\n\n"
-    "You can share as many or as few as you'd like — all at once is fine! "
-    "Or just say **\"show me the schools\"** whenever you're ready to see your options."
-)
-
-PREFERENCES_RECEIVED_TEMPLATE = (
-    "Got it — I've noted your preferences. "
-    "Would you like to add anything else, or shall I show you the schools that match?"
+    "Great news — I've found eligible schools for your child!\n\n"
+    "I can show you the full list right now, or I can help you narrow things down "
+    "to find the best fit. If you'd like my help, here are some things that can "
+    "make a real difference in finding the right school:\n\n"
+    "  — **Language programs** (dual language, bilingual, ESL)\n"
+    "  — **Special education services** (IEP, Section 504, ABA — feel free to ask me what any of these mean)\n"
+    "  — **After-school programs & extracurriculars**\n"
+    "  — **Sports**\n"
+    "  — **Commute or transportation needs**\n"
+    "  — **School schedule / hours**\n\n"
+    "Share as many or as few as you'd like — all at once is perfectly fine. "
+    "If you're not sure about something on this list, just ask and I'll explain it.\n\n"
+    "At any point in our conversation, you can ask me for the current list of schools "
+    "that fit your preferences. The more you share, the better I can match — but "
+    "there's no pressure to go through everything."
 )
 
 NO_SCHOOLS_TEMPLATE = (
-    "I wasn't able to find eligible schools for that grade and address combination. "
-    "Please double-check your information, or contact Boston Public Schools directly "
-    "at (617) 635-9010 for assistance."
+    "I wasn't able to find eligible schools for that combination of grade and address. "
+    "This could mean the address wasn't recognized in the BPS system. "
+    "Please double-check your information, or contact a BPS Welcome Center directly "
+    "at **(617) 635-9010** — they'll be happy to help."
 )
+
+# Light LLM prompt: used for single-call natural responses during early turns.
+LIGHT_RESPONSE_PROMPT = f"""{CORE_FACTS}
+You are a warm, concise enrollment assistant.
+
+You will be given:
+- What the user just said
+- What information you already have
+- What information is still missing
+
+Rules:
+- Acknowledge what the user shared naturally (one short sentence).
+- Ask for the specific missing information in a warm, conversational way.
+- For address: explain BPS uses home-based assignment, so a home address gives the most accurate results, but a ZIP code works too if they prefer not to share their full address.
+- For grade: say "grade applying for" and mention the options (K0, K1, K2, or 1-12).
+- For language: ask what language parents or primary caregivers use to communicate with their child at home.
+- Keep response under 60 words.
+- Return plain text only.
+"""
+
+# Preference parsing prompt: single LLM call to extract structured preferences
+# from a natural, messy user message.
+PREFERENCE_PARSE_PROMPT = f"""{CORE_FACTS}
+You are a preference parsing assistant. The user has shared their school preferences
+in a natural, conversational way. Extract what you can and respond warmly.
+
+Rules:
+- Acknowledge each preference they mentioned.
+- If they asked a question (like "what is Section 504?"), answer it briefly and clearly.
+- If they expressed uncertainty about something, be reassuring and explain it simply.
+- Summarize what you understood from their message.
+- End by asking if they'd like to add anything else, or if they'd like to see the schools that match what they've shared so far.
+- Be warm, conversational, and human. Not robotic.
+- Keep response under 150 words.
+- Return plain text only.
+"""
 
 # Regex patterns for fast extraction
 _GRADE_PATTERN = re.compile(
@@ -311,6 +352,33 @@ _GRADE_PATTERN = re.compile(
 )
 
 _ZIP_PATTERN = re.compile(r"\b(02\d{3})\b")
+
+_ADDRESS_PATTERN = re.compile(
+    r"\b(\d{1,6}\s+[A-Za-z0-9][A-Za-z0-9 .'\-]*?"
+    r"\s+(?:st|street|ave|avenue|rd|road|blvd|boulevard|ln|lane|dr|drive|ct|court|pl|place|way|pkwy|parkway))\b",
+    re.IGNORECASE,
+)
+
+# Map common language mentions to Avela UUIDs
+LANGUAGE_MAP = {
+    "english": "c188baa2-f2e8-4015-80ee-a42514617585",
+    "spanish": "3b523e63-a0a8-4782-9ec8-ba9e5ee16b04",
+    "arabic": "10b89d82-0751-47f5-8216-66574f7b0bac",
+    "cantonese": "5d9314ac-54cb-4c2f-ba11-70df2cb2a7a9",
+    "cape verdean": "254a5e6e-e553-40f3-b9be-c4fd949f2e07",
+    "french": "1f13bc17-9f93-4d7d-ae27-90476b01b19e",
+    "haitian creole": "562093f6-b3bd-4003-bb85-e51210eb2a35",
+    "haitian": "562093f6-b3bd-4003-bb85-e51210eb2a35",
+    "creole": "562093f6-b3bd-4003-bb85-e51210eb2a35",
+    "italian": "89c38e6d-b9b7-4516-a2c7-661a66452684",
+    "korean": "61b2a192-594c-4f4f-b9fb-f5e7d3c2df91",
+    "mandarin": "5f5820d8-f3c9-40cf-8e3e-9730961c7bf7",
+    "chinese": "5f5820d8-f3c9-40cf-8e3e-9730961c7bf7",
+    "portuguese": "28d7754c-e035-4ef0-b942-a501ca6e91ad",
+    "russian": "2969bff1-dd46-402c-92a9-cb713deeddd6",
+    "somali": "fce808a3-f366-409e-9c2b-863b4f7c3b67",
+    "vietnamese": "9f580e8e-ca8e-4142-a3c2-5336fab3d1e1",
+}
 
 
 class Chatbot:
@@ -356,8 +424,7 @@ class Chatbot:
         """Extract grade from free text. Returns normalized grade or empty string."""
         if not text:
             return ""
-        t = text.strip()
-        m = _GRADE_PATTERN.search(t)
+        m = _GRADE_PATTERN.search(text)
         if not m:
             return ""
         raw = m.group(1).strip().upper()
@@ -365,7 +432,6 @@ class Chatbot:
             return raw
         if "KINDERGARTEN" in raw:
             return "K2"
-        # Strip ordinal suffix
         num_match = re.match(r"(\d{1,2})", raw)
         if num_match:
             n = int(num_match.group(1))
@@ -379,10 +445,31 @@ class Chatbot:
         if not text:
             return ""
         matches = _ZIP_PATTERN.findall(text)
-        # Prefer last match (handles corrections like "02142, I mean 02125")
         for m in reversed(matches):
             return m
         return ""
+
+    @staticmethod
+    def _fast_extract_address(text: str) -> str:
+        """Extract a street address from free text."""
+        if not text:
+            return ""
+        m = _ADDRESS_PATTERN.search(text)
+        return m.group(1).strip() if m else ""
+
+    @staticmethod
+    def _fast_extract_language(text: str) -> tuple[str, str]:
+        """
+        Extract home language from free text.
+        Returns (language_name, avela_uuid) or ("", "").
+        """
+        if not text:
+            return ("", "")
+        t = text.strip().lower()
+        for lang, uuid in LANGUAGE_MAP.items():
+            if lang in t:
+                return (lang.title(), uuid)
+        return ("", "")
 
     @staticmethod
     def _is_show_schools_request(text: str) -> bool:
@@ -405,6 +492,45 @@ class Chatbot:
             "best fit", "personalize", "preferences",
         ]
         return any(trigger in t for trigger in triggers)
+
+    def _light_llm_response(self, user_input: str, have: dict, missing: list) -> str:
+        """
+        Single lightweight LLM call for natural acknowledgment + asking for missing info.
+        Much cheaper than the full 3-agent pipeline.
+        """
+        payload = (
+            f"User said: {user_input}\n\n"
+            f"Information collected so far: {json.dumps(have)}\n\n"
+            f"Still needed: {', '.join(missing)}"
+        )
+        try:
+            return self._run_agent(LIGHT_RESPONSE_PROMPT, payload, temperature=0.5, max_tokens=100)
+        except Exception:
+            missing_text = " and ".join(missing)
+            return f"Thanks for that! I still need your {missing_text} to look up eligible schools."
+
+    def _parse_preferences_light(self, user_input: str) -> str:
+        """
+        Single LLM call to parse preferences, answer questions about terms,
+        and respond naturally. Much cheaper than the full agent pipeline.
+        """
+        profile = self.intake_memory.get("profile", {})
+        payload = (
+            f"User said: {user_input}\n\n"
+            f"We already know about this family:\n"
+            f"- Grade: {profile.get('target_grade', 'unknown')}\n"
+            f"- Location: {profile.get('zip_or_neighborhood', 'unknown')}\n"
+            f"- Language: {profile.get('language_needs', 'unknown')}\n"
+            f"- Preferences shared so far: {json.dumps({k: v for k, v in profile.items() if v and k not in ('target_grade', 'zip_or_neighborhood', 'language_needs', 'language_uuid', 'street_address')})}\n\n"
+            f"Number of eligible schools we have: {len(self._avela_eligible)}"
+        )
+        try:
+            return self._run_agent(PREFERENCE_PARSE_PROMPT, payload, temperature=0.5, max_tokens=200)
+        except Exception:
+            return (
+                "Thanks for sharing that! I've noted your preferences. "
+                "Would you like to add anything else, or shall I show you the schools that match?"
+            )
 
     def _apply_local_filters(self, schools: list[dict], profile: dict) -> list[dict]:
         """Filter eligible schools based on user preferences from catalog data."""
@@ -486,86 +612,106 @@ class Chatbot:
 
     def _fast_path(self, user_input: str, history: list) -> str | None:
         """
-        Handle deterministic stages without LLM calls.
+        Handle early conversation stages efficiently.
+        Uses templates + single light LLM calls instead of the full 3-agent pipeline.
         Returns a response string, or None to fall through to the agent system.
         """
         text = (user_input or "").strip()
         is_first_turn = not history
+        profile = self.intake_memory["profile"]
 
         # --- Stage: greeting ---
         if self._fast_stage == "greeting":
-            # Extract grade and ZIP from the message
+            # Extract whatever info is in the message
             grade = self._fast_extract_grade(text)
             zip_code = self._fast_extract_zip(text)
+            address = self._fast_extract_address(text)
+            lang_name, lang_uuid = self._fast_extract_language(text)
 
-            if is_first_turn and not grade and not zip_code:
-                # Generic greeting, no info provided
+            if grade:
+                profile["target_grade"] = grade
+            if zip_code:
+                profile["zip_or_neighborhood"] = zip_code
+            if address:
+                profile["street_address"] = address
+            if lang_name:
+                profile["language_needs"] = lang_name
+                profile["language_uuid"] = lang_uuid
+
+            has_grade = bool(profile.get("target_grade"))
+            has_location = bool(profile.get("zip_or_neighborhood"))
+            has_language = bool(profile.get("language_needs"))
+
+            # Nothing provided on first turn → greeting
+            if is_first_turn and not has_grade and not has_location:
                 return GREETING_TEMPLATE
 
-            # User provided some info — extract what we can
-            if grade:
-                self.intake_memory["profile"]["target_grade"] = grade
-            if zip_code:
-                self.intake_memory["profile"]["zip_or_neighborhood"] = zip_code
+            # Have all three → call Avela and offer choice
+            if has_grade and has_location and has_language:
+                return self._call_avela_and_offer_choice()
 
-            profile = self.intake_memory["profile"]
+            # Have grade + location but no language → ask for language with light LLM
+            if has_grade and has_location and not has_language:
+                have = {k: v for k, v in profile.items() if v}
+                return self._light_llm_response(text, have, [
+                    "home language (what language do parents or caregivers use to communicate with your child at home?)"
+                ])
 
-            if profile["target_grade"] and profile["zip_or_neighborhood"]:
-                # Have both — call Avela and move to choice
-                self._avela_eligible = avela_get_schools(
-                    target_grade=profile["target_grade"],
-                    zip_or_neighborhood=profile["zip_or_neighborhood"],
-                )
-                if self._avela_eligible:
-                    self.intake_memory["stage"] = "ready_for_recommendations"
-                    self._fast_stage = "awaiting_choice"
-                    return CHOICE_TEMPLATE
+            # Have some info but not grade + location → ask for missing with light LLM
+            have = {k: v for k, v in profile.items() if v}
+            missing = []
+            if not has_grade:
+                missing.append("grade applying for (K0, K1, K2, or 1-12)")
+            if not has_location:
+                missing.append("home address or Boston ZIP code")
+            if not has_language:
+                missing.append("home language (language parents use to communicate with child at home)")
+
+            if is_first_turn and not has_grade and not has_location:
+                return GREETING_TEMPLATE
+
+            return self._light_llm_response(text, have, missing)
+
+        # --- Stage: awaiting_language ---
+        if self._fast_stage == "awaiting_language":
+            lang_name, lang_uuid = self._fast_extract_language(text)
+            if lang_name:
+                profile["language_needs"] = lang_name
+                profile["language_uuid"] = lang_uuid
+            elif text.strip():
+                # If they typed something but we can't match a language,
+                # treat as English (they might have said "just English" or "we speak English at home")
+                eng_keywords = ["english", "no", "none", "just", "same", "normal"]
+                if any(k in text.lower() for k in eng_keywords):
+                    profile["language_needs"] = "English"
+                    profile["language_uuid"] = LANGUAGE_MAP["english"]
                 else:
-                    self._fast_stage = "done"
-                    return NO_SCHOOLS_TEMPLATE
-            elif profile["target_grade"] and not profile["zip_or_neighborhood"]:
-                return f"Thanks — grade {profile['target_grade']}, got it! What's your Boston address or ZIP code?"
-            elif profile["zip_or_neighborhood"] and not profile["target_grade"]:
-                return f"Thanks — {profile['zip_or_neighborhood']}, got it! What grade will your child be entering? (K0, K1, K2, or 1–12)"
-            else:
-                # First turn with info we can't parse — show greeting
-                if is_first_turn:
-                    return GREETING_TEMPLATE
-                return None  # fall through to agents
+                    # Still can't determine — default to English
+                    profile["language_needs"] = "English"
+                    profile["language_uuid"] = LANGUAGE_MAP["english"]
+
+            return self._call_avela_and_offer_choice()
 
         # --- Stage: awaiting_choice ---
         if self._fast_stage == "awaiting_choice":
             if self._is_show_schools_request(text):
-                # Show results immediately
                 self.recommendation_pool = self._avela_eligible
                 self.has_active_recommendations = True
                 self.recommendation_cursor = min(4, len(self.recommendation_pool))
                 self._fast_stage = "done"
                 return self._format_results_text(self.recommendation_pool)
 
-            if self._is_filter_request(text):
+            # User is sharing preferences or asking questions — use light LLM
+            if text:
                 self._fast_stage = "filtering"
                 self.intake_memory["stage"] = "filtering"
-                return (
-                    "I'd love to help narrow things down! Share any preferences from the list above — "
-                    "language programs, special ed, after-school, sports, commute, or anything else. "
-                    "You can give me everything at once, or one at a time."
-                )
+                return self._parse_preferences_light(text)
 
-            # User might be providing preferences directly
-            # Check if they gave info that looks like preferences
-            has_content = len(text.split()) >= 2
-            if has_content and not self._is_show_schools_request(text):
-                self._fast_stage = "filtering"
-                # Fall through to agents for preference parsing
-                return None
-
-            return None  # fall through to agents
+            return None
 
         # --- Stage: filtering ---
         if self._fast_stage == "filtering":
             if self._is_show_schools_request(text):
-                # Apply filters and show
                 filtered = self._apply_local_filters(self._avela_eligible, self.intake_memory["profile"])
                 self.recommendation_pool = filtered
                 self.has_active_recommendations = True
@@ -573,11 +719,35 @@ class Chatbot:
                 self._fast_stage = "done"
                 return self._format_results_text(self.recommendation_pool)
 
-            # Otherwise fall through to agents for preference parsing and conversation
+            # More preferences or questions — keep using light LLM
+            if text:
+                return self._parse_preferences_light(text)
+
             return None
 
-        # --- Stage: done (agent system handles everything from here) ---
+        # --- Stage: done ---
         return None
+
+    def _call_avela_and_offer_choice(self) -> str:
+        """Call Avela API with collected profile data and present the choice template."""
+        profile = self.intake_memory["profile"]
+        try:
+            self._avela_eligible = avela_get_schools(
+                target_grade=profile.get("target_grade", ""),
+                zip_or_neighborhood=profile.get("zip_or_neighborhood", ""),
+                street_address=profile.get("street_address", ""),
+                language_uuid=profile.get("language_uuid", ""),
+            )
+        except Exception:
+            self._avela_eligible = []
+
+        if self._avela_eligible:
+            self.intake_memory["stage"] = "ready_for_recommendations"
+            self._fast_stage = "awaiting_choice"
+            return CHOICE_TEMPLATE
+        else:
+            self._fast_stage = "done"
+            return NO_SCHOOLS_TEMPLATE
 
     def _get_client(self):
         if self.provider == "openai":
